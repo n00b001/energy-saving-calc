@@ -1213,6 +1213,7 @@ export default function EnergySimulator() {
   const [solarKWp,setSolarKWp]=useState(4.0);
   const [solarTilt,setSolarTilt]=useState(35);
   const [solarAzimuth,setSolarAzimuth]=useState(180);
+  const [extraSolarArrays, setExtraSolarArrays]=useState([]);
   const [batteryKWh,setBatteryKWh]=useState(10.0);
   const [batteryPowerKW,setBatteryPowerKW]=useState(5.0);
   const [batteryEfficiency,setBatteryEfficiency]=useState(90);
@@ -1817,6 +1818,28 @@ export default function EnergySimulator() {
               <Slider label="Solar System Size" unit=" kWp" value={solarKWp} onChange={setSolarKWp} min={0} max={12} step={0.5} color={C.yellow} clampMode={(clamps.solarKWp||{}).mode} clampMin={(clamps.solarKWp||{}).min} clampMax={(clamps.solarKWp||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,solarKWp:{...(p.solarKWp||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("solarKWp",solarKWp,0,12)}/>
               <Slider label="Battery Capacity" unit=" kWh" value={batteryKWh} onChange={setBatteryKWh} min={0} max={25} step={0.5} color={C.accent} clampMode={(clamps.batteryKWh||{}).mode} clampMin={(clamps.batteryKWh||{}).min} clampMax={(clamps.batteryKWh||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryKWh:{...(p.batteryKWh||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryKWh",batteryKWh,0,25)}/>
               <Slider label="Battery Power" unit=" kW" value={batteryPowerKW} onChange={setBatteryPowerKW} min={1} max={12} step={0.5} color={C.accent} clampMode={(clamps.batteryPowerKW||{}).mode} clampMin={(clamps.batteryPowerKW||{}).min} clampMax={(clamps.batteryPowerKW||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryPowerKW:{...(p.batteryPowerKW||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryPowerKW",batteryPowerKW,1,12)}/>
+
+              <div className="mt-8">
+                <h4 className="text-sm font-bold text-accent mb-4">Battery Strategy</h4>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    {id:"peak",label:"Peak Shave",desc:"Charge overnight, discharge only 4-7pm peak"},
+                    {id:"smart",label:"Smart",desc:"Use battery when it saves vs grid import"},
+                    {id:"maxExport",label:"Max Export",desc:"Aggressively charge cheap, export at peak"},
+                    {id:"solarFirst",label:"Solar First",desc:"Minimize grid use, battery powers home first"},
+                  ].map(s => (
+                    <button key={s.id} onClick={()=>setBattStrategy(s.id)} className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${battStrategy===s.id ? 'bg-accent text-slate-900':'glass-pill text-slate-400 hover:text-white'}`}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-xs text-slate-400 mt-4 leading-relaxed">
+                  {battStrategy==="peak"?"Charge overnight at cheapest rates. Only discharge during 4-7pm peak. Conservative.":
+                   battStrategy==="smart"?"Discharge to home when price > charge cost + losses. Export at peak. Best all-rounder.":
+                   battStrategy==="maxExport"?"Charge aggressively at cheap rates. Discharge home at mid-price. Export maximum at peak.":
+                   "Prioritize solar storage and self-use. Minimal grid charging. Battery powers home before grid."}
+                </div>
+              </div>
             </div>
           </div>
         )}
