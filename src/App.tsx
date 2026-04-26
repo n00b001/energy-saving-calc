@@ -1669,7 +1669,7 @@ export default function EnergySimulator() {
   const fmt=v=>`£${Math.abs(v).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,",")}`;
   const fmtD=v=>`£${v.toFixed(2)}`;
 
-  const tabs = [ {id:"overview",label:"Overview"}, {id:"investment",label:"Investment"}, {id:"config",label:"Energy Params"}, {id:"agile",label:"Data Sync"} ];
+  const tabs = [ {id:"overview",label:"Overview"}, {id:"investment",label:"Investment"}, {id:"config",label:"Energy Params"}, {id:"detail",label:"Graph"}, {id:"yearly",label:"Costs"}, {id:"agile",label:"Data Sync"} ];
 
   return (
     <div className="mesh-gradient text-slate-100 min-h-screen">
@@ -1707,6 +1707,48 @@ export default function EnergySimulator() {
               <Stat label="New Spend" value={fmt(results.newTotal)} sub="/yr" color={C.green} icon="🌿"/>
               <Stat label="Net Monthly" value={fmtD(netMonthly)} sub={useFinance?"after finance":"saved/mo"} color={netMonthly>0?C.accent:C.red} icon="💰"/>
             </div>
+
+            {/* Monthly comparison banner */}
+            {(()=>{
+              const curMo = results.currentTotal / 12;
+              const newEnergyMo = results.newTotal / 12;
+              const finMo = useFinance ? mp : 0;
+              const totalNewMo = newEnergyMo + finMo;
+              const diff = curMo - totalNewMo;
+              const isNoBrainer = useFinance && diff > 0;
+              return (
+                <div className={`p-6 rounded-[24px] border ${isNoBrainer ? 'bg-green-500/10 border-green-500/20' : 'glass-card'}`}>
+                  <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                    <div className="flex-1 w-full">
+                      <div className="text-xs text-slate-400 mb-1 font-bold">CURRENT MONTHLY</div>
+                      <div className="text-2xl font-bold font-mono text-red-400">{fmtD(curMo)}</div>
+                      <div className="text-[10px] text-slate-500 mt-1">gas + electricity</div>
+                    </div>
+                    <div className="hidden md:block text-2xl text-slate-600">→</div>
+                    <div className="flex-1 w-full">
+                      <div className="text-xs text-slate-400 mb-1 font-bold">NEW MONTHLY</div>
+                      <div className={`text-2xl font-bold font-mono ${totalNewMo<curMo?'text-green-400':'text-red-400'}`}>{fmtD(totalNewMo)}</div>
+                      <div className="text-[10px] text-slate-500 mt-1">energy {fmtD(newEnergyMo)}{useFinance?` + finance ${fmtD(finMo)}`:""}</div>
+                    </div>
+                    <div className="flex-1 w-full md:text-right">
+                      <div className="text-xs text-slate-400 mb-1 font-bold">{diff>0?"SAVING":"EXTRA"}</div>
+                      <div className={`text-2xl font-bold font-mono ${diff>0?'text-green-400':'text-red-400'}`}>{fmtD(Math.abs(diff))}/mo</div>
+                      <div className="text-[10px] text-slate-500 mt-1">{fmt(Math.abs(diff*12))}/yr</div>
+                    </div>
+                  </div>
+                  {isNoBrainer && (
+                    <div className="mt-4 p-3 bg-green-500/10 rounded-xl text-xs text-green-400 font-bold text-center">
+                      ✅ Costs less from day 1 — you save {fmtD(diff)}/mo even while paying the loan. No upfront cost needed.
+                    </div>
+                  )}
+                  {useFinance && diff < 0 && (
+                    <div className="mt-4 p-3 bg-red-500/10 rounded-xl text-xs text-slate-400 text-center">
+                      ⚠️ Costs {fmtD(Math.abs(diff))}/mo more during the {financeTerm}y loan, then saves {fmtD(annualSaving/12)}/mo after.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="glass-card p-8 rounded-[32px]">
               <h3 className="text-xl font-bold mb-6">Investment Returns</h3>
@@ -1778,6 +1820,355 @@ export default function EnergySimulator() {
             </div>
           </div>
         )}
+        
+        {activeTab==="yearly" && (
+          <>
+          {/* Yearly Costs implementation is missing in current app code block inside this area, assuming we can inject it back based on earlier diffs or similar structure. Given limits I will implement it from the previous blocks */}
+          <div className="flex flex-col gap-6">
+            <div className="glass-card p-8 rounded-[32px]">
+              <h3 className="text-xl font-bold mb-6">Yearly Cost Breakdown</h3>
+              <table className="w-full text-xs text-left">
+              <thead><tr className="border-b border-slate-700/50"><th className="pb-2">Month</th><th className="pb-2 text-right">Current</th><th className="pb-2 text-right">Energy</th>{useFinance&&showFinInTabs&&<th className="pb-2 text-right border-l border-slate-700 w-24">+Finance</th>}<th className="pb-2 text-right">Saving</th></tr></thead>
+              <tbody>
+                {results.months.map((m,i)=>{
+                  const finMo = showFinInTabs && useFinance ? mp : 0;
+                  const total = m.newTotal + finMo;
+                  return (
+                    <tr key={i} className="border-b border-white/5">
+                      <td className="py-2 text-slate-400 font-bold">{m.month}</td>
+                      <td className="py-2 text-right font-mono text-red-300">{fmtD(m.currentTotal)}</td>
+                      <td className="py-2 text-right font-mono text-green-400">{fmtD(m.newTotal)}</td>
+                      {useFinance&&showFinInTabs&&<td className="py-2 text-right font-mono text-orange-400 border-l border-slate-700">{fmtD(total)}</td>}
+                      <td className="py-2 text-right font-mono font-bold text-accent">{fmtD(m.currentTotal-total)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              </table>
+            </div>
+            
+            <div className="glass-card p-8 rounded-[32px]">
+              <h3 className="text-xl font-bold mb-6">25-Year Projection</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left min-w-[500px]">
+                  <thead><tr className="border-b border-slate-700/50">
+                    <th className="pb-2 sticky left-0 bg-[#0f172a] z-10 w-16">Year</th>
+                    <th className="pb-2 text-right text-green-400">Saving</th>
+                    {useFinance&&<th className="pb-2 text-right text-orange-400">Finance</th>}
+                    <th className="pb-2 text-right text-accent">Net</th>
+                    <th className="pb-2 text-right text-blue-400">Cumulative</th>
+                  </tr></thead>
+                  <tbody>
+                    {(()=>{
+                      let cum = useFinance ? -deposit : -netCost;
+                      let rows = [];
+                      let hitBE = false;
+                      for (let y=1; y<=25; y++) {
+                        let finY = useFinance && y<=financeTerm ? mp*12 : 0;
+                        let netY = annualSaving - finY;
+                        cum += netY;
+                        let isBE = (!hitBE && cum>=0);
+                        if(isBE) hitBE=true;
+                        rows.push(<tr key={y} className="border-b border-white/5">
+                          <td className={`py-2 sticky left-0 z-10 font-bold ${isBE?'text-green-400 bg-green-400/10':'text-slate-400 bg-[#0f172a]'}`}>{y}{isBE?' ✓':''}</td>
+                          <td className="py-2 text-right font-mono text-green-400">{fmtD(annualSaving)}</td>
+                          {useFinance&&<td className="py-2 text-right font-mono text-orange-400">{finY>0?`-`+fmtD(finY):'—'}</td>}
+                          <td className={`py-2 text-right font-mono font-bold ${netY>0?'text-green-400':'text-red-400'}`}>{netY>0?'':'-'}{fmtD(Math.abs(netY))}</td>
+                          <td className={`py-2 text-right font-mono font-bold ${cum>0?'text-blue-400':'text-red-400'}`}>{cum>0?'':'-'}{fmtD(Math.abs(cum))}</td>
+                        </tr>);
+                      }
+                      return rows;
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          </>
+        )}
+
+        {/* ═══ 30-DAY DETAIL ═══ */}
+        {activeTab==="detail"&&(()=>{
+          const toggle = (key) => setChartHidden(p => ({...p, [key]: !p[key]}));
+          const hid = chartHidden;
+          const fullLog = results.dailyLog;
+          if (!fullLog || fullLog.length === 0) return (<div style={{padding:20,textAlign:"center",color:C.dim}}>No simulation data</div>);
+
+          // Filter to selected month and re-index days from 0
+          const log = fullLog.filter(r => r.m === detailMonth);
+          const daysInMonth = log.length > 0 ? Math.max(...log.map(r=>r.day)) - Math.min(...log.map(r=>r.day)) + 1 : 0;
+          const dayOffset = log.length > 0 ? log[0].day : 0;
+
+          const ttFmt = (v,p) => {
+            const r = p&&p[0]&&p[0].payload;
+            if (!r) return "";
+            const dayInMonth = r.day - dayOffset + 1;
+            return `${MONTHS[detailMonth]} day ${dayInMonth}, ${String(Math.floor(r.slot/2)).padStart(2,"0")}:${r.slot%2===0?"00":"30"} — ${r.price.toFixed(1)}p`;
+          };
+          const xFmt = (v,i) => { const r = chartData[i]; return r && r.slot === 0 ? `${r.day-dayOffset+1}` : ""; };
+          const ttS = {background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,fontSize:10};
+
+          // Slice data to synced view range
+          const vs = Math.max(0, Math.min(viewStart, log.length));
+          const ve = Math.min(viewEnd, log.length);
+          const chartData = log.slice(vs, ve);
+          const onRangeChange = (s, e) => { setViewStart(s); setViewEnd(Math.min(e, log.length)); };
+
+          const Leg = ({items}) => (
+            <div style={{display:"flex",flexWrap:"wrap",gap:2,marginBottom:6}}>
+              {items.map(({color,label,k})=>(
+                <span key={k} onClick={()=>toggle(k)} style={{
+                  cursor:"pointer",fontSize:9,padding:"2px 6px",borderRadius:4,
+                  background:hid[k]?"transparent":"rgba(255,255,255,0.04)",
+                  opacity:hid[k]?0.3:1,display:"inline-flex",alignItems:"center",gap:3,
+                  border:`1px solid ${hid[k]?"transparent":"rgba(255,255,255,0.06)"}`,
+                }}>
+                  <span style={{width:10,height:3,borderRadius:1,background:color,display:"inline-block"}}/>
+                  {label}
+                </span>
+              ))}
+            </div>
+          );
+
+          // ── SANKEY from full-year monthly results (not 30-day log) ──
+          const ms = results.months;
+          const sA = {
+            solarSelf: ms.reduce((s,m)=>s+m.solarSelfConsumed,0),
+            solarBatt: ms.reduce((s,m)=>s+Math.max(0,m.solarGen-m.solarSelfConsumed-m.solarExport),0),
+            solarExport: ms.reduce((s,m)=>s+m.solarExport,0),
+            gridHome: ms.reduce((s,m)=>s+m.gridImport-m.gridBatt,0),
+            gridBatt: ms.reduce((s,m)=>s+m.gridBatt,0),
+            battHome: ms.reduce((s,m)=>s+m.battHome,0),
+            battExport: ms.reduce((s,m)=>s+m.battExport,0),
+          };
+          const fk = v => v >= 1000 ? `${(v/1000).toFixed(1)}MWh` : `${Math.round(v)}kWh`;
+
+          return (
+          <div style={{padding:"0 4px"}}>
+            {/* Month selector */}
+            <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:10}}>
+              {MONTHS.map((mn,i)=>(
+                <button key={i} onClick={()=>{setDetailMonth(i);setViewStart(0);setViewEnd(144);}} style={{
+                  background:detailMonth===i?C.accent:C.card,color:detailMonth===i?C.bg:C.muted,
+                  border:`1px solid ${detailMonth===i?C.accent:C.border}`,borderRadius:6,
+                  padding:"4px 7px",fontSize:10,fontWeight:600,cursor:"pointer",
+                }}>{mn}</button>
+              ))}
+            </div>
+            {/* Range selector — syncs all charts */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 13px",marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <span style={{fontSize:10,color:C.dim}}>Day range (drag handles or slide window)</span>
+                <span style={{fontSize:10,color:C.accent,fontFamily:mono}}>Day {Math.floor(viewStart/48)+1}–{Math.ceil(viewEnd/48)} of {Math.ceil(log.length/48)}</span>
+              </div>
+              <RangeBrush total={log.length} start={viewStart} end={viewEnd} onChange={onRangeChange} color={C.accent}/>
+              <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                {[3,7,14,0].map(d=>(
+                  <button key={d} onClick={()=>{const span=d===0?log.length:d*48;setViewStart(0);setViewEnd(Math.min(span,log.length));}} style={{
+                    padding:"2px 8px",borderRadius:4,fontSize:9,cursor:"pointer",
+                    background:(d===0&&viewEnd>=log.length)||(d>0&&(viewEnd-viewStart)===d*48)?C.accent:"#1e293b",
+                    color:(d===0&&viewEnd>=log.length)||(d>0&&(viewEnd-viewStart)===d*48)?C.bg:C.dim,
+                    border:`1px solid ${(d===0&&viewEnd>=log.length)||(d>0&&(viewEnd-viewStart)===d*48)?C.accent:"#334155"}`,
+                  }}>{d===0?"All":`${d}d`}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Chart 1: Battery SOC + Price */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:13,marginBottom:10}}>
+              <h3 style={{fontSize:12,fontWeight:600,margin:"0 0 4px"}}>Battery & Price</h3>
+              <Leg items={[{color:C.accent,label:"SOC (kWh)",k:"soc"},{color:C.orange,label:"Import (p)",k:"pr"},{color:C.green,label:"Export (p)",k:"ep"}]}/>
+              <TouchChart height={180}>
+                <ResponsiveContainer>
+                  <ComposedChart data={chartData} margin={{top:5,right:5,left:-15,bottom:0}} barCategoryGap={0} barGap={0}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/>
+                    <XAxis dataKey="slot" tick={{fontSize:8,fill:C.muted}} tickFormatter={xFmt}/>
+                    <YAxis yAxisId="soc" tick={{fontSize:8,fill:C.muted}} unit="kWh"/>
+                    <YAxis yAxisId="pr" orientation="right" tick={{fontSize:8,fill:C.muted}} unit="p"/>
+                    <Tooltip contentStyle={ttS} labelFormatter={ttFmt}/>
+                    {!hid.soc&&<Bar yAxisId="soc" dataKey="battSOC" fill={C.accent} opacity={0.6} name="SOC" isAnimationActive={false}/>}
+                    {!hid.pr&&<Line yAxisId="pr" type="stepAfter" dataKey="price" stroke={C.orange} dot={false} strokeWidth={1.5} name="Import" isAnimationActive={false}/>}
+                    {!hid.ep&&<Line yAxisId="pr" type="stepAfter" dataKey="expPrice" stroke={C.green} dot={false} strokeWidth={1} opacity={0.7} name="Export" isAnimationActive={false}/>}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </TouchChart>
+            </div>
+
+            {/* Chart 2: Home supply sources + demand */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:13,marginBottom:10}}>
+              <h3 style={{fontSize:12,fontWeight:600,margin:"0 0 4px"}}>Home Energy (stacked = total demand)</h3>
+              <Leg items={[
+                {color:C.yellow,label:"Solar→Home",k:"sd"},
+                {color:"#60a5fa",label:"Batt→Home",k:"bh"},
+                {color:C.red,label:"Grid→Home",k:"gh"},
+              ]}/>
+              <TouchChart height={170}>
+                <ResponsiveContainer>
+                  <BarChart data={chartData} margin={{top:5,right:5,left:-15,bottom:0}} barCategoryGap={0} barGap={0}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/>
+                    <XAxis dataKey="slot" tick={{fontSize:8,fill:C.muted}} tickFormatter={xFmt}/>
+                    <YAxis tick={{fontSize:8,fill:C.muted}} unit="kWh"/>
+                    <Tooltip contentStyle={ttS} labelFormatter={ttFmt}/>
+                    {!hid.sd&&<Bar dataKey="solarDirect" stackId="home" fill={C.yellow} opacity={0.85} name="Solar→Home" isAnimationActive={false}/>}
+                    {!hid.bh&&<Bar dataKey="battHome" stackId="home" fill="#60a5fa" opacity={0.85} name="Batt→Home" isAnimationActive={false}/>}
+                    {!hid.gh&&<Bar dataKey="gridHome" stackId="home" fill={C.red} opacity={0.6} name="Grid→Home" isAnimationActive={false}/>}
+                  </BarChart>
+                </ResponsiveContainer>
+              </TouchChart>
+            </div>
+
+            {/* Chart 3: Charging & Export */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:13,marginBottom:10}}>
+              <h3 style={{fontSize:12,fontWeight:600,margin:"0 0 4px"}}>Battery Charging & Export</h3>
+              <Leg items={[
+                {color:C.yellow,label:"Solar→Batt",k:"sbb"},
+                {color:"#3b82f6",label:"Grid→Batt",k:"gb"},
+                {color:C.purple,label:"Batt→Grid",k:"be"},
+                {color:C.green,label:"Solar→Grid",k:"se"},
+              ]}/>
+              <TouchChart height={170}>
+                <ResponsiveContainer>
+                  <BarChart data={chartData} margin={{top:5,right:5,left:-15,bottom:0}} barCategoryGap={0} barGap={0}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/>
+                    <XAxis dataKey="slot" tick={{fontSize:8,fill:C.muted}} tickFormatter={xFmt}/>
+                    <YAxis tick={{fontSize:8,fill:C.muted}} unit="kWh"/>
+                    <Tooltip contentStyle={ttS} labelFormatter={ttFmt}/>
+                    {!hid.sbb&&<Bar dataKey="solarBatt" stackId="ce" fill={C.yellow} opacity={0.85} name="Solar→Batt" isAnimationActive={false}/>}
+                    {!hid.gb&&<Bar dataKey="gridBatt" stackId="ce" fill="#3b82f6" opacity={0.85} name="Grid→Batt" isAnimationActive={false}/>}
+                    {!hid.be&&<Bar dataKey="battExport" stackId="ce" fill={C.purple} opacity={0.85} name="Batt→Grid" isAnimationActive={false}/>}
+                    {!hid.se&&<Bar dataKey="solarExport" stackId="ce" fill={C.green} opacity={0.85} name="Solar→Grid" isAnimationActive={false}/>}
+                  </BarChart>
+                </ResponsiveContainer>
+              </TouchChart>
+            </div>
+
+            <div style={{fontSize:9,color:C.dim,lineHeight:1.5,padding:"0 4px 8px"}}>
+              Showing {MONTHS[detailMonth]} ({daysInMonth} days, {log.length} half-hour slots). Sankey: full annual flows. Tap legend to toggle lines.
+            </div>
+
+            {/* Sankey */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:13,marginBottom:10}}>
+              <h3 style={{fontSize:12,fontWeight:600,margin:"0 0 10px"}}>Annual Energy Flow</h3>
+              <svg viewBox="0 0 400 220" style={{width:"100%",height:"auto"}}>
+                {(()=>{
+                  const allFlows = [
+                    {from:"solar",to:"home",val:sA.solarSelf,color:C.yellow,id:"sh"},
+                    {from:"solar",to:"batt",val:sA.solarBatt,color:C.yellow,id:"sb"},
+                    {from:"solar",to:"export",val:sA.solarExport,color:C.yellow,id:"se"},
+                    {from:"grid",to:"home",val:sA.gridHome,color:C.red,id:"gh"},
+                    {from:"grid",to:"batt",val:sA.gridBatt,color:"#60a5fa",id:"gb"},
+                    {from:"batt",to:"home",val:sA.battHome,color:C.accent,id:"bh"},
+                    {from:"batt",to:"export",val:sA.battExport,color:C.purple,id:"be"},
+                  ].filter(f => f.val > 10);
+                  if (allFlows.length === 0) return <text x={200} y={110} fill={C.dim} fontSize="11" textAnchor="middle">No flows to display</text>;
+
+                  // Column X positions for node bars
+                  const barW = 10;
+                  const col = [15, 175, 375];
+                  const totalH = 190, topPad = 10;
+
+                  // Compute node totals (max of in/out for sizing)
+                  const totals = {};
+                  for (const f of allFlows) {
+                    if (!totals[f.from]) totals[f.from] = {out:0, in:0};
+                    if (!totals[f.to]) totals[f.to] = {out:0, in:0};
+                    totals[f.from].out += f.val;
+                    totals[f.to].in += f.val;
+                  }
+                  const nodeSize = {};
+                  for (const [k,v] of Object.entries(totals)) nodeSize[k] = Math.max(v.out, v.in);
+                  const maxVal = Math.max(1, ...Object.values(nodeSize));
+                  const scale = totalH / maxVal;
+
+                  // Node definitions: column, order within column, color, label
+                  const nodeDefs = [
+                    {id:"solar",col:0,color:C.yellow,label:`${fk(results.solarGenerated)} Solar`},
+                    {id:"grid",col:0,color:C.red,label:`${fk(results.gridImport)} Grid`},
+                    {id:"batt",col:1,color:C.accent,label:`Battery ${batteryKWh}kWh`},
+                    {id:"home",col:2,color:C.green,label:`${fk(results.months.reduce((s,m)=>s+m.elecUsage+m.hpElec,0))} Home`},
+                    {id:"export",col:2,color:C.purple,label:`${fk(results.gridExport)} Export`},
+                  ].filter(n => nodeSize[n.id]);
+
+                  // Position nodes within columns with gaps
+                  const colNodes = [[], [], []];
+                  for (const n of nodeDefs) colNodes[n.col].push(n);
+
+                  const nodePos = {};
+                  for (let c = 0; c < 3; c++) {
+                    const ns = colNodes[c];
+                    const totalBarH = ns.reduce((s,n) => s + nodeSize[n.id] * scale, 0);
+                    const gapTotal = Math.max(0, (ns.length - 1) * 12);
+                    let y = topPad + (totalH - totalBarH - gapTotal) / 2;
+                    for (const n of ns) {
+                      const h = Math.max(8, nodeSize[n.id] * scale);
+                      nodePos[n.id] = {x: col[c], y, h, color: n.color, label: n.label, col: c};
+                      y += h + 12;
+                    }
+                  }
+
+                  // Stack flows on node edges
+                  const outOff = {}, inOff = {};
+                  for (const id of Object.keys(nodePos)) { outOff[id] = 0; inOff[id] = 0; }
+
+                  // Order: top-to-top first, then top-to-mid, etc to minimize crossings
+                  const flowOrder = ["sh","sb","se","gb","gh","bh","be"];
+                  const ordered = flowOrder.map(id => allFlows.find(f=>f.id===id)).filter(Boolean);
+
+                  const ribbons = ordered.map(f => {
+                    const sn = nodePos[f.from], dn = nodePos[f.to];
+                    const sh = (f.val / Math.max(1, totals[f.from].out)) * sn.h;
+                    const dh = (f.val / Math.max(1, totals[f.to].in)) * dn.h;
+                    const sy = sn.y + outOff[f.from];
+                    const dy = dn.y + inOff[f.to];
+                    outOff[f.from] += sh;
+                    inOff[f.to] += dh;
+                    return {color: f.color, val: f.val, sx: sn.x + barW, sy, sh, dx: dn.x, dy, dh};
+                  });
+
+                  return (
+                    <g>
+                      {ribbons.map((r,i) => {
+                        const mx = (r.sx + r.dx) / 2;
+                        return (
+                          <path key={i} d={[
+                            `M${r.sx},${r.sy}`,
+                            `C${mx},${r.sy} ${mx},${r.dy} ${r.dx},${r.dy}`,
+                            `L${r.dx},${r.dy+r.dh}`,
+                            `C${mx},${r.dy+r.dh} ${mx},${r.sy+r.sh} ${r.sx},${r.sy+r.sh}`,
+                            `Z`
+                          ].join(" ")} fill={r.color} opacity={0.3}/>
+                        );
+                      })}
+                      {ribbons.map((r,i) => {
+                        const mx = (r.sx + r.dx) / 2;
+                        const ly = (r.sy + r.sh/2 + r.dy + r.dh/2) / 2;
+                        return (
+                          <text key={`t${i}`} x={mx} y={ly} fill={r.color} fontSize="7" textAnchor="middle" fontFamily={mono} opacity={0.85}>
+                            {fk(r.val)}
+                          </text>
+                        );
+                      })}
+                      {Object.entries(nodePos).map(([id, n]) => {
+                        const nd = nodeDefs.find(d=>d.id===id);
+                        const labelRight = n.col < 2;
+                        return (
+                          <g key={id}>
+                            <rect x={n.x} y={n.y} width={barW} height={n.h} rx={3} fill={n.color} opacity={0.85}/>
+                            <text x={labelRight ? n.x + barW + 5 : n.x - 5} y={n.y + n.h/2 + 4}
+                              fill={n.color} fontSize="9" fontWeight="600"
+                              textAnchor={labelRight ? "start" : "end"}>{nd ? nd.label : id}</text>
+                          </g>
+                        );
+                      })}
+                    </g>
+                  );
+                })()}
+              </svg>
+            </div>
+
+          </div>
+          );
+        })()}
 
         {activeTab==="agile" && (
           <div className="flex flex-col gap-6">
@@ -1789,12 +2180,12 @@ export default function EnergySimulator() {
                 <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
                   <div className="text-lg font-bold text-orange-400 mb-2">{priceData?"✓ Agile Import Loaded":"Upload Agile Import CSV"}</div>
                   <input type="file" accept=".csv,.json" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0]);}}/>
-                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
+                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-pricing-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
                 </label>
                 <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
                   <div className="text-lg font-bold text-purple-400 mb-2">{exportPriceData?"✓ Agile Export Loaded":"Upload Agile Export CSV"}</div>
                   <input type="file" accept=".csv,.json" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0], true);}}/>
-                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
+                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-pricing-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
                 </label>
                 <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
                   <div className="text-lg font-bold text-yellow-400 mb-2">{solarDataProcessed?"✓ Solar Irradiance Loaded":"Upload Solar CSV"}</div>
