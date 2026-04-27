@@ -239,7 +239,7 @@ function dailySolarOutput(dayData, kWp, tilt, azimuth, month) {
   return halfHourly;
 }
 
-function monthlySolarStats(solarDays, kWp, tilt, azimuth) {
+function monthlySolarStats(solarDays, arrays) {
   const stats = Array.from({length: 12}, () => ({
     days: 0, totalKWh: 0, peakDay: 0, worstDay: Infinity,
     avgDailyKWh: 0, totalGHI: 0,
@@ -248,8 +248,13 @@ function monthlySolarStats(solarDays, kWp, tilt, azimuth) {
 
   for (const [date, dayData] of Object.entries(solarDays)) {
     const m = parseInt(date.split("-")[1]) - 1;
-    const output = dailySolarOutput(dayData, kWp, tilt, azimuth, m);
-    const dayTotal = output.reduce((a, b) => a + b, 0);
+    let dayOutput = new Array(48).fill(0);
+    for (const arr of arrays) {
+      if (arr.kWp <= 0) continue;
+      const arrOutput = dailySolarOutput(dayData, arr.kWp, arr.tilt, arr.azimuth, m);
+      for (let i = 0; i < 48; i++) dayOutput[i] += arrOutput[i];
+    }
+    const dayTotal = dayOutput.reduce((a, b) => a + b, 0);
     const dayGHI = dayData.ghi.reduce((a, b) => a + (b || 0), 0) / 1000;
 
     stats[m].days++;
@@ -257,7 +262,7 @@ function monthlySolarStats(solarDays, kWp, tilt, azimuth) {
     stats[m].totalGHI += dayGHI;
     stats[m].peakDay = Math.max(stats[m].peakDay, dayTotal);
     stats[m].worstDay = Math.min(stats[m].worstDay, dayTotal);
-    stats[m].dailyOutputs.push(output);
+    stats[m].dailyOutputs.push(dayOutput);
   }
 
   for (const s of stats) {
@@ -550,8 +555,11 @@ function simulate(params, priceData, solarData, elecUsage, gasUsage, exportPrice
     annualGas, annualElec, fixedElecRate, fixedGasRate, fixedElecStanding, fixedGasStanding,
     boilerEfficiency, solarKWp, batteryKWh, batteryPowerKW, batteryEfficiency,
     hpFlowTemp, exportRate, agileStanding, hotWaterKWhPerDay, solarTilt, solarAzimuth,
+    extraSolarArrays = [],
     battStrategy = "smart",
   } = params;
+
+  const solarArrays = [{kWp: solarKWp, tilt: solarTilt, azimuth: solarAzimuth}, ...extraSolarArrays];
 
   const SOLAR_KWH_PER_KWP = correctedSolarKWh(solarTilt, solarAzimuth);
   const annualHotWaterGas = hotWaterKWhPerDay * 365;
@@ -649,17 +657,20 @@ function simulate(params, priceData, solarData, elecUsage, gasUsage, exportPrice
     }
 
     const hasRealSolar = solarData && solarData.stats && solarData.stats[m].days > 0;
-    const syntheticMonthSolar = solarKWp * SOLAR_KWH_PER_KWP[m];
-    const solarProfile = generateSolarProfile(m, solarAzimuth);
-    let daySolarArrays;
-    let monthSolar;
+    let monthSolar = 0;
+    let daySolarArrays = null;
+
     if (hasRealSolar) {
       daySolarArrays = solarData.stats[m].dailyOutputs;
       monthSolar = solarData.stats[m].totalKWh / solarData.stats[m].days * days; 
     } else {
-      daySolarArrays = null;
-      monthSolar = syntheticMonthSolar;
+      for (const arr of solarArrays) {
+        const arrKWhPerKWp = correctedSolarKWh(arr.tilt, arr.azimuth);
+        monthSolar += arr.kWp * arrKWhPerKWp[m];
+      }
     }
+
+    const solarProfile = generateSolarProfile(m, solarAzimuth);
 
     let dayPriceArrays;
     if (hasRealData && monthStats[m].days > 0) {
@@ -1449,14 +1460,60 @@ export default function EnergySimulator() {
   }, [agileExportRaw]);
   const solarDataProcessed = useMemo(() => {
     if (!solarRaw || Object.keys(solarRaw).length === 0) return null;
-    return { days: solarRaw, stats: monthlySolarStats(solarRaw, solarKWp, solarTilt, solarAzimuth) };
-  }, [solarRaw, solarKWp, solarTilt, solarAzimuth]);
+    const arrays = [{kWp: solarKWp, tilt: solarTilt, azimuth: solarAzimuth}, ...extraSolarArrays];
+    return { days: solarRaw, stats: monthlySolarStats(solarRaw, arrays) };
+  }, [solarRaw, solarKWp, solarTilt, solarAzimuth, extraSolarArrays]);
 
   const [pasteMode, setPasteMode] = useState(null);
   const [pasteText, setPasteText] = useState("");
 
-  const agileApiUrl = useMemo(() => `https://api.octopus.energy/v1/products/${AGILE_PRODUCT}/electricity-tariffs/E-1R-${AGILE_PRODUCT}-${region}/standard-unit-rates/?page_size=1500`, [region]);
-  const solarApiUrl = useMemo(() => `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=2023-01-01&end_date=2023-12-31&hourly=shortwave_radiation,temperature_2m&timezone=Europe%2FLondon`, [lat, lon]);
+  const agileApiUrl = useMemo(() => {
+    const tc = `E-1R-${AGILE_PRODUCT}-${region}`;
+    return `https://api.octopus.energy/v1/products/${AGILE_PRODUCT}/electricity-tariffs/${tc}/standard-unit-rates/?page_size=1500`;
+  }, [region]);
+
+  const agileMonthUrls = useMemo(() => {
+    const tc = `E-1R-${AGILE_PRODUCT}-${region}`;
+    const base = `https://api.octopus.energy/v1/products/${AGILE_PRODUCT}/electricity-tariffs/${tc}/standard-unit-rates/`;
+    const now = new Date();
+    const urls = [];
+    for (let i = 11; i >= 0; i--) {
+      const from = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const to = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const label = from.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+      urls.push({
+        label,
+        url: `${base}?period_from=${from.toISOString().split("T")[0]}T00:00Z&period_to=${to.toISOString().split("T")[0]}T00:00Z&page_size=1500`,
+      });
+    }
+    return urls;
+  }, [region]);
+
+  const exportApiUrl = useMemo(() => {
+    const tc = `E-1R-${AGILE_EXPORT_PRODUCT}-${region}`;
+    return `https://api.octopus.energy/v1/products/${AGILE_EXPORT_PRODUCT}/electricity-tariffs/${tc}/standard-unit-rates/?page_size=1500`;
+  }, [region]);
+
+  const exportMonthUrls = useMemo(() => {
+    const tc = `E-1R-${AGILE_EXPORT_PRODUCT}-${region}`;
+    const base = `https://api.octopus.energy/v1/products/${AGILE_EXPORT_PRODUCT}/electricity-tariffs/${tc}/standard-unit-rates/`;
+    const now = new Date();
+    const urls = [];
+    for (let i = 11; i >= 0; i--) {
+      const from = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const to = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const label = from.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+      urls.push({ label, url: `${base}?period_from=${from.toISOString().split("T")[0]}T00:00Z&period_to=${to.toISOString().split("T")[0]}T00:00Z&page_size=1500` });
+    }
+    return urls;
+  }, [region]);
+
+  const solarApiUrl = useMemo(() => {
+    const now = new Date();
+    const ago = new Date(now); ago.setFullYear(now.getFullYear()-1);
+    const end = new Date(now); end.setDate(end.getDate()-2);
+    return `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${ago.toISOString().split("T")[0]}&end_date=${end.toISOString().split("T")[0]}&hourly=shortwave_radiation,temperature_2m&timezone=Europe%2FLondon`;
+  }, [lat, lon]);
 
   const saveConfig = useCallback(() => {
     const config = {
@@ -1563,87 +1620,246 @@ export default function EnergySimulator() {
     } catch (e) {}
   }, [pasteMode, pasteText, agileRaw, agileExportRaw, solarRaw]);
 
-  const paramDefs = useMemo(() => [
-    {key:"solarKWp",label:"Solar kWp",min:0,max:12,step:0.5,get:()=>solarKWp,set:setSolarKWp,group:"energy"},
-    {key:"solarTilt",label:"Tilt",min:0,max:90,step:5,get:()=>solarTilt,set:setSolarTilt,group:"energy"},
-    {key:"solarAzimuth",label:"Azimuth",min:0,max:355,step:5,get:()=>solarAzimuth,set:setSolarAzimuth,group:"energy"},
-    {key:"batteryKWh",label:"Battery kWh",min:0,max:25,step:0.5,get:()=>batteryKWh,set:setBatteryKWh,group:"energy"},
-    {key:"batteryPowerKW",label:"Battery kW",min:1,max:12,step:0.5,get:()=>batteryPowerKW,set:setBatteryPowerKW,group:"energy"},
-    {key:"batteryEfficiency",label:"Batt Eff%",min:80,max:98,step:1,get:()=>batteryEfficiency,set:setBatteryEfficiency,group:"energy"},
-    {key:"hpFlowTemp",label:"HP Flow°C",min:35,max:55,step:5,get:()=>hpFlowTemp,set:setHpFlowTemp,group:"energy"},
-    {key:"hpCost",label:"HP Cost",min:6000,max:18000,step:500,get:()=>hpCost,set:setHpCost,group:"cost"},
-    {key:"deposit",label:"Deposit",min:0,max:30000,step:500,get:()=>deposit,set:setDeposit,group:"finance"},
-    {key:"financeRate",label:"APR %",min:0,max:15,step:0.1,get:()=>financeRate,set:setFinanceRate,group:"finance"},
-    {key:"financeTerm",label:"Term yrs",min:3,max:25,step:1,get:()=>financeTerm,set:setFinanceTerm,group:"finance"},
-  ], [solarKWp,solarTilt,solarAzimuth,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,hpCost,deposit,financeRate,financeTerm]);
+  const paramDefs = useMemo(() => {
+    const base = [
+      {key:"solarKWp",label:"Solar 1 kWp",min:0,max:12,step:0.5,get:()=>solarKWp,set:setSolarKWp,group:"energy"},
+      {key:"solarTilt",label:"Solar 1 Tilt",min:0,max:90,step:5,get:()=>solarTilt,set:setSolarTilt,group:"energy"},
+      {key:"solarAzimuth",label:"Solar 1 Azimuth",min:0,max:355,step:5,get:()=>solarAzimuth,set:setSolarAzimuth,group:"energy"},
+    ];
+    extraSolarArrays.forEach((arr, idx) => {
+      base.push({
+        key: `extraSolarKWp_${idx}`, label: `Solar ${idx+2} kWp`, min:0, max:12, step:0.5,
+        get: () => extraSolarArrays[idx].kWp,
+        set: (v) => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, kWp: v} : a)),
+        group: "extraSolar"
+      });
+      base.push({
+        key: `extraSolarTilt_${idx}`, label: `Solar ${idx+2} Tilt`, min:0, max:90, step:5,
+        get: () => extraSolarArrays[idx].tilt,
+        set: (v) => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, tilt: v} : a)),
+        group: "extraSolar"
+      });
+      base.push({
+        key: `extraSolarAzimuth_${idx}`, label: `Solar ${idx+2} Azimuth`, min:0, max:355, step:5,
+        get: () => extraSolarArrays[idx].azimuth,
+        set: (v) => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, azimuth: v} : a)),
+        group: "extraSolar"
+      });
+    });
+    base.push(
+      {key:"batteryKWh",label:"Battery kWh",min:0,max:25,step:0.5,get:()=>batteryKWh,set:setBatteryKWh,group:"energy"},
+      {key:"batteryPowerKW",label:"Battery kW",min:1,max:12,step:0.5,get:()=>batteryPowerKW,set:setBatteryPowerKW,group:"energy"},
+      {key:"batteryEfficiency",label:"Batt Eff%",min:80,max:98,step:1,get:()=>batteryEfficiency,set:setBatteryEfficiency,group:"energy"},
+      {key:"hpFlowTemp",label:"HP Flow°C",min:35,max:55,step:5,get:()=>hpFlowTemp,set:setHpFlowTemp,group:"energy"},
+      {key:"hpCost",label:"HP Cost",min:6000,max:18000,step:500,get:()=>hpCost,set:setHpCost,group:"cost"},
+      {key:"deposit",label:"Deposit",min:0,max:30000,step:500,get:()=>deposit,set:setDeposit,group:"finance"},
+      {key:"financeRate",label:"APR %",min:0,max:15,step:0.1,get:()=>financeRate,set:setFinanceRate,group:"finance"},
+      {key:"financeTerm",label:"Term yrs",min:3,max:25,step:1,get:()=>financeTerm,set:setFinanceTerm,group:"finance"}
+    );
+    return base;
+  }, [solarKWp, solarTilt, solarAzimuth, extraSolarArrays, batteryKWh, batteryPowerKW, batteryEfficiency, hpFlowTemp, hpCost, deposit, financeRate, financeTerm]);
 
   const runOptimizer = useCallback(async () => {
     setOptimizing(true); setOptProgress(0);
-    const active = paramDefs.filter(p => !clamps[p.key] || clamps[p.key].mode !== "fixed");
-    if (active.length === 0) { setOptimizing(false); return; }
-    
-    // Very simplified, deterministic local optimization for demonstration as generating the full 150-line optimizer is tough on token limits.
-    // It steps through active params to improve the target score locally.
+
+    const active = paramDefs.filter(p => {
+      const c = clamps[p.key];
+      return !c || c.mode !== "fixed";
+    });
+    if (active.length === 0) { setOptResult("No free/clamped parameters"); setOptimizing(false); return; }
+
     const bounds = active.map(p => {
       const c = clamps[p.key];
-      return c && c.mode === "clamp" ? {min: c.min!=null?c.min:p.min, max: c.max!=null?c.max:p.max} : {min: p.min, max: p.max};
+      if (c && c.mode === "clamp") return { min: c.min != null ? c.min : p.min, max: c.max != null ? c.max : p.max };
+      return { min: p.min, max: p.max };
     });
 
-    const baseSimP = {annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,battStrategy};
-    const baseCostP = {hpCost, solarCost, batteryCost, installCost, scaffolding, busGrant};
-    const baseFinP = {deposit, financeRate, financeTerm, useFinance};
+    const dim = active.length;
+    const popSize = Math.max(15, dim * 5);
+    const maxGen = optGenerations;
+    const numRestarts = 3;
+    const gensPerRestart = Math.ceil(maxGen / numRestarts);
 
-    const ev = (vec) => {
-      const sp={...baseSimP}, cp={...baseCostP}, fp={...baseFinP};
-      active.forEach((p,i) => {
-        const val = Math.max(bounds[i].min, Math.min(bounds[i].max, Math.round(vec[i]/p.step)*p.step));
-        if (p.group==="energy") sp[p.key]=val; else if (p.group==="cost") cp[p.key]=val; else fp[p.key]=val;
+    const baseSimParams = {
+      annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,
+      boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,
+      hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,
+      extraSolarArrays, battStrategy,
+    };
+    const baseCostParams = { hpCost, solarCost, batteryCost, installCost, scaffolding, busGrant };
+    const baseFinParams = { deposit, financeRate, financeTerm, useFinance };
+    const solarCostPerKWp = solarRateRef.current;
+    const batteryCostPerKWh = battRateRef.current;
+
+    const evaluate = (vec) => {
+      const simP = {...baseSimParams};
+      const costP = {...baseCostParams};
+      const finP = {...baseFinParams};
+      const extraArrays = JSON.parse(JSON.stringify(extraSolarArrays));
+
+      active.forEach((p, i) => {
+        const snapped = Math.round(vec[i] / p.step) * p.step;
+        const val = Math.max(bounds[i].min, Math.min(bounds[i].max, snapped));
+        if (p.group === "energy") simP[p.key] = val;
+        else if (p.group === "cost") costP[p.key] = val;
+        else if (p.group === "finance") finP[p.key] = val;
+        else if (p.group === "extraSolar") {
+          const [key, idx] = p.key.split("_");
+          const arrayIdx = parseInt(idx);
+          if (key === "extraSolarKWp") extraArrays[arrayIdx].kWp = val;
+          else if (key === "extraSolarTilt") extraArrays[arrayIdx].tilt = val;
+          else if (key === "extraSolarAzimuth") extraArrays[arrayIdx].azimuth = val;
+        }
       });
-      cp.solarCost = sp.solarKWp * solarRateRef.current;
-      cp.batteryCost = sp.batteryKWh * battRateRef.current;
-      const res = simulate(sp, priceData, solarDataProcessed, elecUsageData, gasUsageData, exportPriceData);
+      simP.extraSolarArrays = extraArrays;
+      costP.solarCost = simP.solarKWp * solarCostPerKWp;
+      costP.batteryCost = simP.batteryKWh * batteryCostPerKWh;
+
+      let currentSolarData = solarDataProcessed;
+      if (solarDataProcessed && solarDataProcessed.days) {
+        const arrays = [{kWp: simP.solarKWp, tilt: simP.solarTilt, azimuth: simP.solarAzimuth}, ...extraArrays];
+        currentSolarData = { days: solarDataProcessed.days, stats: monthlySolarStats(solarDataProcessed.days, arrays) };
+      }
+
+      const res = simulate(simP, priceData, currentSolarData, elecUsageData, gasUsageData, exportPriceData);
       
-      const net = Math.max(0, cp.hpCost+cp.solarCost+cp.batteryCost+cp.installCost+cp.scaffolding - cp.busGrant);
-      const finAmt = Math.max(0, net - (fp.deposit || 0));
-      const mp = (fp.useFinance && finAmt>0 && fp.financeTerm>0) ? calcMP(finAmt, fp.financeRate, fp.financeTerm) : 0;
-      
-      const sv = res.annualSaving||(res.currentTotal-res.newTotal);
-      const finYrs = fp.useFinance ? Math.min(fp.financeTerm, 20) : 0;
-      const totalSpent = fp.useFinance ? (fp.deposit||0) + mp*12*finYrs : net;
-      const totalSav = sv * 20;
-      
-      if (optTarget==="annualReturn") return - ((totalSpent>0 && totalSav>totalSpent) ? (Math.pow(totalSav/totalSpent, 1/20)-1)*100 : -100);
-      if (optTarget==="roi20") return -(totalSpent>0 ? ((totalSav-totalSpent)/totalSpent)*100 : -100);
-      if (optTarget==="netMonthly") return -(sv/12 - mp);
-      return (res.newTotal/12) + mp; // minimize cost
+      const extraSolarCost = extraArrays.reduce((s, a) => s + (a.cost || 0), 0);
+      const gross = costP.hpCost + costP.solarCost + costP.batteryCost + costP.installCost + costP.scaffolding + extraSolarCost;
+      const net = Math.max(0, gross - costP.busGrant);
+      const finAmt = Math.max(0, net - (finP.deposit || 0));
+      let mp = 0;
+      if (finP.useFinance && finAmt > 0 && finP.financeTerm > 0) {
+        mp = calcMP(finAmt, finP.financeRate || 0, finP.financeTerm);
+      }
+      const saving = res.annualSaving || (res.currentTotal - res.newTotal);
+      const annFinCost = mp * 12;
+      const finYrs = finP.useFinance ? Math.min(finP.financeTerm, 20) : 0;
+      const totalSpent = finP.useFinance ? (finP.deposit||0) + annFinCost * finYrs : net;
+      const totalSav = saving * 20;
+      const profit = totalSav - totalSpent;
+      const monthlyEnergy = res.newTotal / 12;
+      const netMo = saving / 12 - mp;
+      const annRet = totalSpent > 0 && totalSav > totalSpent ? (Math.pow(totalSav / totalSpent, 1/20) - 1) * 100 : -100;
+      const r20 = totalSpent > 0 ? (profit / totalSpent) * 100 : -100;
+
+      if (optTarget === "annualReturn") return -annRet;
+      if (optTarget === "roi20") return -r20;
+      if (optTarget === "netMonthly") return -netMo;
+      return monthlyEnergy + mp;
     };
 
-    let bestV = active.map(p=>p.get());
-    let bestC = ev(bestV);
-    
-    // Quick random search (50 iters) instead of full DE to save bytes
-    for (let i=0; i<optGenerations; i++) {
-        const testV = active.map((a,idx)=> bounds[idx].min + Math.random()*(bounds[idx].max-bounds[idx].min));
-        const c = ev(testV);
-        if (c < bestC) { bestC=c; bestV=testV; }
-        if (i%5===0) { setOptProgress(i/optGenerations); await new Promise(r=>setTimeout(r,0)); }
+    const currentVec = active.map(p => p.get());
+    const currentCost = evaluate(currentVec);
+    let globalBest = { vec: currentVec.slice(), cost: currentCost };
+    let totalEvals = 0;
+
+    for (let restart = 0; restart < numRestarts; restart++) {
+      const pop = [];
+      for (let i = 0; i < popSize; i++) {
+        let vec;
+        if (i === 0 && restart === 0) {
+          vec = currentVec.slice();
+        } else if (i === 0 && globalBest.cost < Infinity) {
+          vec = globalBest.vec.map((v, d) => {
+            const range = bounds[d].max - bounds[d].min;
+            return Math.max(bounds[d].min, Math.min(bounds[d].max, v + (Math.random() - 0.5) * range * 0.3));
+          });
+        } else {
+          vec = active.map((p,j) => bounds[j].min + Math.random() * (bounds[j].max - bounds[j].min));
+        }
+        const cost = evaluate(vec);
+        pop.push({ vec, cost });
+        totalEvals++;
+      }
+
+      let bestIdx = 0;
+      pop.forEach((ind, i) => { if (ind.cost < pop[bestIdx].cost) bestIdx = i; });
+      let stagnantGens = 0;
+      let prevBest = pop[bestIdx].cost;
+
+      for (let gen = 0; gen < gensPerRestart; gen++) {
+        const F = 0.5 + Math.random() * 0.5;
+        const CR = 0.3 + Math.random() * 0.6;
+
+        for (let i = 0; i < popSize; i++) {
+          const idxs = [];
+          while (idxs.length < 3) {
+            const r = Math.floor(Math.random() * popSize);
+            if (r !== i && !idxs.includes(r)) idxs.push(r);
+          }
+          const useCurrentBest = Math.random() < 0.5;
+          const base = useCurrentBest ? pop[bestIdx].vec : pop[idxs[0]].vec;
+          const diff1 = useCurrentBest ? pop[idxs[0]].vec : pop[idxs[1]].vec;
+          const diff2 = useCurrentBest ? pop[idxs[1]].vec : pop[idxs[2]].vec;
+
+          const mutant = base.map((v, d) => v + F * (diff1[d] - diff2[d]));
+          const jrand = Math.floor(Math.random() * dim);
+          const trial = pop[i].vec.map((v, d) => {
+            if (d === jrand || Math.random() < CR) {
+              return Math.max(bounds[d].min, Math.min(bounds[d].max, mutant[d]));
+            }
+            return v;
+          });
+          const trialCost = evaluate(trial);
+          totalEvals++;
+          if (trialCost <= pop[i].cost) {
+            pop[i] = { vec: trial, cost: trialCost };
+            if (trialCost < pop[bestIdx].cost) bestIdx = i;
+          }
+        }
+
+        if (Math.abs(pop[bestIdx].cost - prevBest) < 0.001) stagnantGens++;
+        else { stagnantGens = 0; prevBest = pop[bestIdx].cost; }
+
+        if (stagnantGens > 8) {
+          const sorted = pop.map((p,i) => ({i, cost:p.cost})).sort((a,b) => b.cost - a.cost);
+          const replaceCount = Math.ceil(popSize * 0.3);
+          for (let k = 0; k < replaceCount; k++) {
+            const ri = sorted[k].i;
+            if (ri === bestIdx) continue;
+            const vec = active.map((p,j) => bounds[j].min + Math.random() * (bounds[j].max - bounds[j].min));
+            pop[ri] = { vec, cost: evaluate(vec) };
+            totalEvals++;
+          }
+          stagnantGens = 0;
+        }
+
+        const totalProgress = (restart * gensPerRestart + gen + 1) / (numRestarts * gensPerRestart);
+        if (gen % 3 === 0) {
+          setOptProgress(totalProgress);
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+      if (pop[bestIdx].cost < globalBest.cost) {
+        globalBest = { vec: pop[bestIdx].vec.slice(), cost: pop[bestIdx].cost };
+      }
     }
 
-    if (bestC < ev(active.map(p=>p.get()))) {
-      active.forEach((p,i) => {
-        const val = Math.max(bounds[i].min, Math.min(bounds[i].max, Math.round(bestV[i]/p.step)*p.step));
-        p.set(val);
+    const thresholdCost = bestEverCost != null ? Math.min(currentCost, bestEverCost) : currentCost;
+
+    if (globalBest.cost < thresholdCost) {
+      active.forEach((p, i) => {
+        const snapped = Math.round(globalBest.vec[i] / p.step) * p.step;
+        p.set(Math.max(p.min, Math.min(p.max, snapped)));
       });
-      setOptResult(`Improved! Score: ${bestC.toFixed(2)}`);
+      setBestEverCost(globalBest.cost);
+      setOptResult(`Improved! Score: ${globalBest.cost.toFixed(2)}`);
     } else {
-      setOptResult(`Optimised via random search: No improvement.`);
+      setOptResult(`No improvement found after ${totalEvals.toLocaleString()} evals.`);
     }
-    setOptProgress(1); setOptimizing(false);
-  }, [paramDefs, clamps, optTarget, optGenerations, annualGas,annualElec,solarKWp,batteryKWh,hpFlowTemp, battStrategy, useFinance, deposit, financeRate, financeTerm, priceData, exportPriceData, solarDataProcessed]);
 
-  const results = useMemo(() => simulate({annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,battStrategy}, priceData, solarDataProcessed, elecUsageData, gasUsageData, exportPriceData), [annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,battStrategy,priceData,solarDataProcessed,elecUsageData,gasUsageData,exportPriceData]);
+    setOptProgress(1);
+    setOptimizing(false);
+  }, [paramDefs, clamps, optTarget, optGenerations, bestEverCost, annualGas, annualElec, fixedElecRate, fixedGasRate,
+    fixedElecStanding, fixedGasStanding, boilerEfficiency, solarKWp, batteryKWh, batteryPowerKW,
+    batteryEfficiency, hpFlowTemp, exportRate, agileStanding, hotWaterKWhPerDay, solarTilt, solarAzimuth,
+    extraSolarArrays, battStrategy, hpCost, solarCost, batteryCost, installCost, scaffolding, busGrant,
+    deposit, financeRate, financeTerm, useFinance, priceData, solarDataProcessed, elecUsageData, gasUsageData, exportPriceData]);
 
-  const grossCost=hpCost+solarCost+batteryCost+installCost+scaffolding;
+  const results = useMemo(() => simulate({annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,extraSolarArrays,battStrategy}, priceData, solarDataProcessed, elecUsageData, gasUsageData, exportPriceData), [annualGas,annualElec,fixedElecRate,fixedGasRate,fixedElecStanding,fixedGasStanding,boilerEfficiency,solarKWp,batteryKWh,batteryPowerKW,batteryEfficiency,hpFlowTemp,exportRate,agileStanding,hotWaterKWhPerDay,solarTilt,solarAzimuth,extraSolarArrays,battStrategy,priceData,solarDataProcessed,elecUsageData,gasUsageData,exportPriceData]);
+
+  const extraSolarCost = extraSolarArrays.reduce((s, a) => s + (a.cost || 0), 0);
+  const grossCost=hpCost+solarCost+batteryCost+installCost+scaffolding+extraSolarCost;
   const netCost=Math.max(0,grossCost-busGrant);
   const financedAmt=Math.max(0,netCost-deposit);
   const mp=calcMP(financedAmt,financeRate,financeTerm);
@@ -1658,6 +1874,13 @@ export default function EnergySimulator() {
   const totalSavings20Y = annualSaving * 20;
   const profit20 = totalSavings20Y - totalSpent20Y;
   const roi20 = totalSpent20Y > 0 ? (profit20 / totalSpent20Y) * 100 : 0;
+
+  // CAGR: what compound rate turns totalSpent into totalSavings over 20 years
+  const annualReturn = totalSpent20Y > 0 && totalSavings20Y > totalSpent20Y
+    ? (Math.pow(totalSavings20Y / totalSpent20Y, 1/20) - 1) * 100
+    : totalSpent20Y > 0 && totalSavings20Y > 0
+      ? -((1 - Math.pow(totalSavings20Y / totalSpent20Y, 1/20)) * 100)
+      : 0;
 
   let breakEvenYear = null;
   let cumCash = useFinance ? -deposit : -netCost;
@@ -1753,8 +1976,9 @@ export default function EnergySimulator() {
 
             <div className="glass-card p-8 rounded-[32px]">
               <h3 className="text-xl font-bold mb-6">Investment Returns</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-6 mb-8 overflow-x-auto">
                 <Stat label="Payback Time" value={breakEvenYear?`${breakEvenYear} yrs`:(simplePayback<100?`~${simplePayback.toFixed(1)}y`:"N/A")} sub="break even point" color={C.accent}/>
+                <Stat label="Annual Return" value={`${annualReturn.toFixed(1)}%`} sub="CAGR over 20y" color={annualReturn>0?C.yellow:C.red}/>
                 <Stat label="20Y Net Profit" value={`${profit20>=0?"":"-"}${fmt(Math.abs(profit20))}`} sub={`spent ${fmt(totalSpent20Y)}`} color={profit20>0?C.green:C.red}/>
                 <Stat label="20Y ROI" value={`${roi20.toFixed(0)}%`} sub={`saved ${fmt(totalSavings20Y)}`} color={roi20>0?C.blue:C.red}/>
                 <Stat label="Net Outlay" value={fmt(deposit)} sub={useFinance?"upfront capital":"initial cost"} color={C.orange}/>
@@ -1815,9 +2039,44 @@ export default function EnergySimulator() {
             
             <div className="glass-card p-8 rounded-[32px]">
               <h3 className="text-xl font-bold mb-8">Asset Sizing</h3>
-              <Slider label="Solar System Size" unit=" kWp" value={solarKWp} onChange={setSolarKWp} min={0} max={12} step={0.5} color={C.yellow} clampMode={(clamps.solarKWp||{}).mode} clampMin={(clamps.solarKWp||{}).min} clampMax={(clamps.solarKWp||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,solarKWp:{...(p.solarKWp||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("solarKWp",solarKWp,0,12)}/>
-              <Slider label="Battery Capacity" unit=" kWh" value={batteryKWh} onChange={setBatteryKWh} min={0} max={25} step={0.5} color={C.accent} clampMode={(clamps.batteryKWh||{}).mode} clampMin={(clamps.batteryKWh||{}).min} clampMax={(clamps.batteryKWh||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryKWh:{...(p.batteryKWh||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryKWh",batteryKWh,0,25)}/>
-              <Slider label="Battery Power" unit=" kW" value={batteryPowerKW} onChange={setBatteryPowerKW} min={1} max={12} step={0.5} color={C.accent} clampMode={(clamps.batteryPowerKW||{}).mode} clampMin={(clamps.batteryPowerKW||{}).min} clampMax={(clamps.batteryPowerKW||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryPowerKW:{...(p.batteryPowerKW||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryPowerKW",batteryPowerKW,1,12)}/>
+
+              <div className="mb-8 p-6 bg-yellow-500/5 rounded-2xl border border-yellow-500/10">
+                <h4 className="text-sm font-bold text-yellow-400 mb-4 uppercase tracking-wider">Solar Array 1 (Main)</h4>
+                <Slider label="Size" unit=" kWp" value={solarKWp} onChange={setSolarKWp} min={0} max={12} step={0.5} color={C.yellow} clampMode={(clamps.solarKWp||{}).mode} clampMin={(clamps.solarKWp||{}).min} clampMax={(clamps.solarKWp||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,solarKWp:{...(p.solarKWp||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("solarKWp",solarKWp,0,12)}/>
+                <Slider label="Tilt" unit="°" value={solarTilt} onChange={setSolarTilt} min={0} max={90} step={5} color={C.yellow} />
+                <Slider label="Azimuth" unit="°" value={solarAzimuth} onChange={setSolarAzimuth} min={0} max={355} step={5} color={C.yellow} />
+              </div>
+
+              {extraSolarArrays.map((arr, idx) => (
+                <div key={idx} className="mb-8 p-6 bg-yellow-500/5 rounded-2xl border border-yellow-500/10">
+                  <div className="flex justify-between items-center mb-4">
+                    <h4 className="text-sm font-bold text-yellow-400 uppercase tracking-wider">Solar Array {idx + 2}</h4>
+                    <button onClick={() => setExtraSolarArrays(prev => prev.filter((_, i) => i !== idx))} className="text-[10px] text-red-400 font-bold glass-pill px-3 py-1 hover:bg-red-500/10 transition">REMOVE</button>
+                  </div>
+                  <Slider label="Size" unit=" kWp" value={arr.kWp} onChange={v => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, kWp: v} : a))} min={0} max={12} step={0.5} color={C.yellow}
+                    clampMode={(clamps[`extraSolarKWp_${idx}`]||{}).mode} clampMin={(clamps[`extraSolarKWp_${idx}`]||{}).min} clampMax={(clamps[`extraSolarKWp_${idx}`]||{}).max}
+                    onClampChange={(lo,hi)=>setClamps(p=>({...p,[`extraSolarKWp_${idx}`]:{...(p[`extraSolarKWp_${idx}`]||{mode:"clamp"}),min:lo,max:hi}}))}
+                    onCycleClamp={()=>cycleClamp(`extraSolarKWp_${idx}`,arr.kWp,0,12)} />
+                  <Slider label="Tilt" unit="°" value={arr.tilt} onChange={v => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, tilt: v} : a))} min={0} max={90} step={5} color={C.yellow}
+                    clampMode={(clamps[`extraSolarTilt_${idx}`]||{}).mode} clampMin={(clamps[`extraSolarTilt_${idx}`]||{}).min} clampMax={(clamps[`extraSolarTilt_${idx}`]||{}).max}
+                    onClampChange={(lo,hi)=>setClamps(p=>({...p,[`extraSolarTilt_${idx}`]:{...(p[`extraSolarTilt_${idx}`]||{mode:"clamp"}),min:lo,max:hi}}))}
+                    onCycleClamp={()=>cycleClamp(`extraSolarTilt_${idx}`,arr.tilt,0,90)} />
+                  <Slider label="Azimuth" unit="°" value={arr.azimuth} onChange={v => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, azimuth: v} : a))} min={0} max={355} step={5} color={C.yellow}
+                    clampMode={(clamps[`extraSolarAzimuth_${idx}`]||{}).mode} clampMin={(clamps[`extraSolarAzimuth_${idx}`]||{}).min} clampMax={(clamps[`extraSolarAzimuth_${idx}`]||{}).max}
+                    onClampChange={(lo,hi)=>setClamps(p=>({...p,[`extraSolarAzimuth_${idx}`]:{...(p[`extraSolarAzimuth_${idx}`]||{mode:"clamp"}),min:lo,max:hi}}))}
+                    onCycleClamp={()=>cycleClamp(`extraSolarAzimuth_${idx}`,arr.azimuth,0,355)} />
+                  <Slider label="Cost" unit="" prefix="£" value={arr.cost || 0} onChange={v => setExtraSolarArrays(prev => prev.map((a, i) => i === idx ? {...a, cost: v} : a))} min={0} max={15000} step={250} color={C.yellow} />
+                </div>
+              ))}
+
+              <button onClick={() => setExtraSolarArrays(prev => [...prev, {kWp: 2, tilt: 35, azimuth: 180, cost: 3000}])} className="w-full mb-8 glass-pill py-3 rounded-xl font-bold text-[10px] hover:bg-white/5 transition tracking-widest uppercase text-yellow-400 border border-yellow-400/20">
+                + Add Another Solar Array
+              </button>
+
+              <div className="mb-8 pt-8 border-t border-white/5">
+                <Slider label="Battery Capacity" unit=" kWh" value={batteryKWh} onChange={setBatteryKWh} min={0} max={25} step={0.5} color={C.accent} clampMode={(clamps.batteryKWh||{}).mode} clampMin={(clamps.batteryKWh||{}).min} clampMax={(clamps.batteryKWh||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryKWh:{...(p.batteryKWh||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryKWh",batteryKWh,0,25)}/>
+                <Slider label="Battery Power" unit=" kW" value={batteryPowerKW} onChange={setBatteryPowerKW} min={1} max={12} step={0.5} color={C.accent} clampMode={(clamps.batteryPowerKW||{}).mode} clampMin={(clamps.batteryPowerKW||{}).min} clampMax={(clamps.batteryPowerKW||{}).max} onClampChange={(lo,hi)=>setClamps(p=>({...p,batteryPowerKW:{...(p.batteryPowerKW||{mode:"clamp"}),min:lo,max:hi}}))} onCycleClamp={()=>cycleClamp("batteryPowerKW",batteryPowerKW,1,12)}/>
+              </div>
 
               <div className="mt-8">
                 <h4 className="text-sm font-bold text-accent mb-4">Battery Strategy</h4>
@@ -2196,25 +2455,92 @@ export default function EnergySimulator() {
         {activeTab==="agile" && (
           <div className="flex flex-col gap-6">
             <div className="glass-card p-8 rounded-[32px]">
-              <h3 className="text-xl font-bold mb-4">Agile Price Importer</h3>
-              <p className="text-sm text-slate-400 mb-6">Upload custom CSV files to run your simulation with accurate half-hourly profiles.</p>
+              <h3 className="text-xl font-bold mb-4">Data Sync</h3>
+              <p className="text-sm text-slate-400 mb-6">Upload or paste data to run your simulation with accurate profiles.</p>
               
+              <div className="mb-6 p-6 bg-orange-500/5 rounded-2xl border border-orange-500/10">
+                <div className="flex justify-between items-center mb-4">
+                  <h4 className="text-sm font-bold text-orange-400 uppercase tracking-wider">⚡ Agile Import Prices</h4>
+                  {priceData && <span className="glass-pill px-3 py-1 text-[10px] text-green-400 font-bold">{Object.keys(priceData.dayData).length}d loaded</span>}
+                </div>
+                <div className="flex gap-4 mb-4">
+                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                    {priceData ? "Replace File" : "Upload CSV/JSON"}
+                    <input type="file" accept=".csv,.json,.txt" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0]);}}/>
+                  </label>
+                  <button onClick={()=>{setPasteMode(pasteMode==="agile"?null:"agile");setPasteText("");}} className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${pasteMode==="agile" ? 'bg-orange-500 text-white':'hover:bg-white/5 text-orange-400'}`}>
+                    {pasteMode==="agile" ? "Cancel" : "Paste JSON"}
+                  </button>
+                </div>
+                {pasteMode==="agile" && (
+                  <div className="mb-4">
+                    <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} placeholder="Paste Octopus API JSON..." className="w-full h-32 bg-white/5 border border-white/10 rounded-xl p-3 text-xs font-mono mb-2 outline-none focus:border-orange-500/50" />
+                    <button onClick={handlePasteLoad} className="w-full bg-orange-500 py-3 rounded-xl font-bold text-xs uppercase tracking-widest">Load Pasted Data</button>
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Direct API Links (Open {"->"} Select All {"->"} Copy {"->"} Paste):</div>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {agileMonthUrls.map((m,i) => (
+                    <a key={i} href={m.url} target="_blank" rel="noreferrer" className="glass-pill px-3 py-1 text-[9px] font-bold text-orange-300 hover:bg-white/10 transition">{m.label}</a>
+                  ))}
+                </div>
+                {loadError && <div className="text-[10px] text-green-400 mt-2 font-mono">{loadError}</div>}
+              </div>
+
+              <div className="mb-6 p-6 bg-purple-500/5 rounded-2xl border border-purple-500/10">
+                <div className="flex justify-between items-center mb-4">
+                  <h4 className="text-sm font-bold text-purple-400 uppercase tracking-wider">📤 Agile Outgoing (Export)</h4>
+                  {exportPriceData && <span className="glass-pill px-3 py-1 text-[10px] text-green-400 font-bold">{Object.keys(exportPriceData.dayData).length}d loaded</span>}
+                </div>
+                <div className="flex gap-4 mb-4">
+                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                    {exportPriceData ? "Replace File" : "Upload CSV/JSON"}
+                    <input type="file" accept=".csv,.json,.txt" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0], true);}}/>
+                  </label>
+                  <button onClick={()=>{setPasteMode(pasteMode==="export"?null:"export");setPasteText("");}} className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${pasteMode==="export" ? 'bg-purple-500 text-white':'hover:bg-white/5 text-purple-400'}`}>
+                    {pasteMode==="export" ? "Cancel" : "Paste JSON"}
+                  </button>
+                </div>
+                {pasteMode==="export" && (
+                  <div className="mb-4">
+                    <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} placeholder="Paste Octopus Agile Outgoing JSON..." className="w-full h-32 bg-white/5 border border-white/10 rounded-xl p-3 text-xs font-mono mb-2 outline-none focus:border-purple-500/50" />
+                    <button onClick={handlePasteLoad} className="w-full bg-purple-500 py-3 rounded-xl font-bold text-xs uppercase tracking-widest">Load Pasted Data</button>
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Direct API Links:</div>
+                <div className="flex flex-wrap gap-2">
+                  {exportMonthUrls.map((m,i) => (
+                    <a key={i} href={m.url} target="_blank" rel="noreferrer" className="glass-pill px-3 py-1 text-[9px] font-bold text-purple-300 hover:bg-white/10 transition">{m.label}</a>
+                  ))}
+                </div>
+                {exportLoadError && <div className="text-[10px] text-green-400 mt-2 font-mono">{exportLoadError}</div>}
+              </div>
+
+              <div className="mb-6 p-6 bg-yellow-500/5 rounded-2xl border border-yellow-500/10">
+                <div className="flex justify-between items-center mb-4">
+                  <h4 className="text-sm font-bold text-yellow-400 uppercase tracking-wider">☀️ Solar Irradiance</h4>
+                  {solarDataProcessed && <span className="glass-pill px-3 py-1 text-[10px] text-green-400 font-bold">{Object.keys(solarRaw).length}d loaded</span>}
+                </div>
+                <div className="flex gap-4 mb-4">
+                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                    {solarDataProcessed ? "Replace File" : "Upload CSV/JSON"}
+                    <input type="file" accept=".csv,.json,.txt" className="hidden" onChange={e=>{if(e.target.files[0])handleSolarCSV(e.target.files[0]);}}/>
+                  </label>
+                  <button onClick={()=>{setPasteMode(pasteMode==="solar"?null:"solar");setPasteText("");}} className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${pasteMode==="solar" ? 'bg-yellow-500 text-white':'hover:bg-white/5 text-yellow-400'}`}>
+                    {pasteMode==="solar" ? "Cancel" : "Paste JSON"}
+                  </button>
+                </div>
+                {pasteMode==="solar" && (
+                  <div className="mb-4">
+                    <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} placeholder="Paste Open-Meteo JSON..." className="w-full h-32 bg-white/5 border border-white/10 rounded-xl p-3 text-xs font-mono mb-2 outline-none focus:border-yellow-500/50" />
+                    <button onClick={handlePasteLoad} className="w-full bg-yellow-500 py-3 rounded-xl font-bold text-xs uppercase tracking-widest">Load Pasted Data</button>
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">API Link:</div>
+                <a href={solarApiUrl} target="_blank" rel="noreferrer" className="inline-block glass-pill px-4 py-2 text-[9px] font-bold text-yellow-300 hover:bg-white/10 transition uppercase tracking-widest">Open Open-Meteo API</a>
+              </div>
+
               <div className="flex flex-col gap-4 mb-6">
-                <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
-                  <div className="text-lg font-bold text-orange-400 mb-2">{priceData?"✓ Agile Import Loaded":"Upload Agile Import CSV"}</div>
-                  <input type="file" accept=".csv,.json" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0]);}}/>
-                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-pricing-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
-                </label>
-                <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
-                  <div className="text-lg font-bold text-purple-400 mb-2">{exportPriceData?"✓ Agile Export Loaded":"Upload Agile Export CSV"}</div>
-                  <input type="file" accept=".csv,.json" className="hidden" onChange={e=>{if(e.target.files[0])handleAgileCSV(e.target.files[0], true);}}/>
-                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://energy-stats.uk/download-historical-pricing-data/" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>energy-stats.uk</a></div>
-                </label>
-                <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
-                  <div className="text-lg font-bold text-yellow-400 mb-2">{solarDataProcessed?"✓ Solar Irradiance Loaded":"Upload Solar CSV"}</div>
-                  <input type="file" accept=".csv,.json" className="hidden" onChange={e=>{if(e.target.files[0])handleSolarCSV(e.target.files[0]);}}/>
-                  <div className="text-[10px] text-slate-500 mt-2">Download from <a href="https://open-meteo.com/en/docs/historical-weather-api#hourly=temperature_2m,shortwave_radiation" target="_blank" rel="noreferrer" className="text-accent underline" onClick={e=>e.stopPropagation()}>Open-Meteo</a></div>
-                </label>
                 <label className="glass-pill p-6 rounded-2xl cursor-pointer text-center hover:bg-white/10 transition">
                   <div className="text-lg font-bold text-blue-400 mb-2">{elecUsageData?"✓ Electric Usage Loaded":"Upload Electricity Usage CSV"}</div>
                   <input type="file" accept=".csv" className="hidden" onChange={e=>{if(e.target.files[0])handleFileUpload(e.target.files[0], "electricity");}}/>
