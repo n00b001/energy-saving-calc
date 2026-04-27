@@ -28,6 +28,8 @@ import {
   calcMP,
   simulate,
   monthlySolarStats,
+  fetchAgileData,
+  fetchSolarData,
 } from "./engine";
 import {
   Stat,
@@ -296,7 +298,6 @@ export default function EnergySimulator() {
   const [fixedElecStanding, setFixedElecStanding] = useState(53.35);
   const [fixedGasStanding, setFixedGasStanding] = useState(31.43);
   const [boilerEfficiency, setBoilerEfficiency] = useState(90);
-  const [hotWaterKWhPerDay, setHotWaterKWhPerDay] = useState(10);
   const [solarKWp, setSolarKWp] = useState(4.0);
   const [solarTilt, setSolarTilt] = useState(35);
   const [solarAzimuth, setSolarAzimuth] = useState(180);
@@ -393,6 +394,8 @@ export default function EnergySimulator() {
   const [agileRaw, setAgileRaw] = useState<any[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exportLoadError, setExportLoadError] = useState<string | null>(null);
+  const [pullProgress, setPullProgress] = useState<{ [key: string]: number }>({});
+  const [isPulling, setIsPulling] = useState<{ [key: string]: boolean }>({});
 
   const [lat, setLat] = useState(51.5);
   const [lon, setLon] = useState(-0.12);
@@ -638,7 +641,6 @@ export default function EnergySimulator() {
       fixedElecStanding,
       fixedGasStanding,
       boilerEfficiency,
-      hotWaterKWhPerDay,
       solarKWp,
       solarTilt,
       solarAzimuth,
@@ -682,7 +684,6 @@ export default function EnergySimulator() {
     fixedElecStanding,
     fixedGasStanding,
     boilerEfficiency,
-    hotWaterKWhPerDay,
     solarKWp,
     solarTilt,
     solarAzimuth,
@@ -722,7 +723,6 @@ export default function EnergySimulator() {
         if (config.fixedElecStanding != null) setFixedElecStanding(config.fixedElecStanding);
         if (config.fixedGasStanding != null) setFixedGasStanding(config.fixedGasStanding);
         if (config.boilerEfficiency != null) setBoilerEfficiency(config.boilerEfficiency);
-        if (config.hotWaterKWhPerDay != null) setHotWaterKWhPerDay(config.hotWaterKWhPerDay);
         if (config.solarKWp != null) setSolarKWp(config.solarKWp);
         if (config.solarTilt != null) setSolarTilt(config.solarTilt);
         if (config.solarAzimuth != null) setSolarAzimuth(config.solarAzimuth);
@@ -755,6 +755,45 @@ export default function EnergySimulator() {
     };
     reader.readAsText(file);
   }, []);
+
+  const pullAgileData = useCallback(
+    async (isExport?: boolean) => {
+      const key = isExport ? "export" : "import";
+      setIsPulling((p) => ({ ...p, [key]: true }));
+      setPullProgress((p) => ({ ...p, [key]: 0 }));
+      const errFn = isExport ? setExportLoadError : setLoadError;
+      const product = isExport ? AGILE_EXPORT_PRODUCT : AGILE_PRODUCT;
+      try {
+        const data = await fetchAgileData(region, product, (progress) => {
+          setPullProgress((p) => ({ ...p, [key]: progress }));
+        });
+        if (isExport) setAgileExportRaw(data);
+        else setAgileRaw(data);
+        errFn(`Successfully pulled ${data.length} records`);
+      } catch (err: any) {
+        errFn(`Pull error: ${err.message}`);
+      } finally {
+        setIsPulling((p) => ({ ...p, [key]: false }));
+      }
+    },
+    [region]
+  );
+
+  const pullSolarData = useCallback(async () => {
+    setIsPulling((p) => ({ ...p, solar: true }));
+    setPullProgress((p) => ({ ...p, solar: 0 }));
+    try {
+      const data = await fetchSolarData(lat, lon, (progress) => {
+        setPullProgress((p) => ({ ...p, solar: progress }));
+      });
+      setSolarRaw(data);
+      setSolarError(`Successfully pulled ${Object.keys(data).length} days of solar/weather data`);
+    } catch (err: any) {
+      setSolarError(`Pull error: ${err.message}`);
+    } finally {
+      setIsPulling((p) => ({ ...p, solar: false }));
+    }
+  }, [lat, lon]);
 
   const handlePasteLoad = useCallback(() => {
     if (!pasteText.trim()) return;
@@ -810,6 +849,7 @@ export default function EnergySimulator() {
   const paramDefs = useMemo(() => {
     const base = [
       { key: "solarKWp", label: "Solar 1 kWp", min: 0, max: 12, step: 0.5, get: () => solarKWp, set: setSolarKWp, group: "energy" },
+      { key: "solarCost", label: "Solar 1 Cost", min: 0, max: 15000, step: 250, get: () => solarCost, set: setSolarCost, group: "cost" },
       { key: "solarTilt", label: "Solar 1 Tilt", min: 0, max: 90, step: 5, get: () => solarTilt, set: setSolarTilt, group: "energy" },
       {
         key: "solarAzimuth",
@@ -948,7 +988,6 @@ export default function EnergySimulator() {
       hpFlowTemp,
       exportRate,
       agileStanding,
-      hotWaterKWhPerDay,
       solarTilt,
       solarAzimuth,
       extraSolarArrays,
@@ -1143,7 +1182,6 @@ export default function EnergySimulator() {
     hpFlowTemp,
     exportRate,
     agileStanding,
-    hotWaterKWhPerDay,
     solarTilt,
     solarAzimuth,
     extraSolarArrays,
@@ -1183,7 +1221,6 @@ export default function EnergySimulator() {
           hpFlowTemp,
           exportRate,
           agileStanding,
-          hotWaterKWhPerDay,
           solarTilt,
           solarAzimuth,
           extraSolarArrays,
@@ -1210,7 +1247,6 @@ export default function EnergySimulator() {
       hpFlowTemp,
       exportRate,
       agileStanding,
-      hotWaterKWhPerDay,
       solarTilt,
       solarAzimuth,
       extraSolarArrays,
@@ -1271,33 +1307,35 @@ export default function EnergySimulator() {
 
   return (
     <div className="mesh-gradient text-slate-100 min-h-screen">
-      <div className="p-6 border-b border-white/10">
+      <div className="sticky top-0 z-50 glass-card border-b border-white/10 px-6 py-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-2xl flex items-center justify-center shadow-lg">
+            <div className="w-10 h-10 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-xl flex items-center justify-center shadow-lg text-lg">
               ⚡
             </div>
-            <h1 className="text-2xl font-bold tracking-tight">VELOCITY</h1>
+            <h1 className="text-xl font-bold tracking-tight">VELOCITY</h1>
           </div>
-          <div className="flex gap-4">
-            {results.usingRealData && (
-              <span className="glass-pill px-3 py-1 text-xs text-green-400 font-bold rounded-full flex items-center">
-                AGILE LIVE
-              </span>
-            )}
-            {results.usingRealSolar && (
-              <span className="glass-pill px-3 py-1 text-xs text-yellow-400 font-bold rounded-full flex items-center">
-                SOLAR LIVE
-              </span>
-            )}
+          <div className="flex items-center gap-3">
+            <div className="flex gap-2 mr-4">
+              {results.usingRealData && (
+                <span className="bg-green-500/10 text-green-400 text-[10px] font-bold px-2 py-1 rounded-md border border-green-500/20">
+                  AGILE LIVE
+                </span>
+              )}
+              {results.usingRealSolar && (
+                <span className="bg-yellow-500/10 text-yellow-400 text-[10px] font-bold px-2 py-1 rounded-md border border-yellow-500/20">
+                  SOLAR LIVE
+                </span>
+              )}
+            </div>
             <button
               onClick={saveConfig}
-              className="glass-pill px-4 py-1.5 text-[10px] text-accent font-bold rounded-full hover:bg-white/10 transition tracking-widest uppercase cursor-pointer"
+              className="glass-pill px-3 py-1.5 text-[9px] text-accent font-bold rounded-lg hover:bg-white/10 transition tracking-widest uppercase cursor-pointer"
             >
-              Save Config
+              Save
             </button>
-            <label className="glass-pill px-4 py-1.5 text-[10px] text-blue-400 font-bold rounded-full hover:bg-white/10 transition tracking-widest uppercase cursor-pointer flex items-center">
-              Load Config
+            <label className="glass-pill px-3 py-1.5 text-[9px] text-blue-400 font-bold rounded-lg hover:bg-white/10 transition tracking-widest uppercase cursor-pointer flex items-center">
+              Load
               <input
                 type="file"
                 accept=".json"
@@ -1307,6 +1345,27 @@ export default function EnergySimulator() {
                 }}
               />
             </label>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 pt-2 border-t border-white/5">
+          <div className="text-center">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Net Monthly</div>
+            <div className={`text-lg font-mono font-bold ${netMonthly >= 0 ? "text-green-400" : "text-red-400"}`}>
+              {netMonthly >= 0 ? "+" : "-"}{fmtD(Math.abs(netMonthly))}
+            </div>
+          </div>
+          <div className="text-center border-x border-white/5">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Return CAGR</div>
+            <div className={`text-lg font-mono font-bold ${annualReturn >= 0 ? "text-yellow-400" : "text-red-400"}`}>
+              {annualReturn.toFixed(1)}%
+            </div>
+          </div>
+          <div className="text-center">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Breakeven</div>
+            <div className="text-lg font-mono font-bold text-blue-400">
+              {breakEvenYear ? `${breakEvenYear}y` : "N/A"}
+            </div>
           </div>
         </div>
       </div>
@@ -1498,24 +1557,6 @@ export default function EnergySimulator() {
                 onCycleClamp={() => cycleClamp("hpCost", hpCost, 6000, 18000)}
               />
               <Slider
-                label={`Solar Capacity (${solarKWp}kWp)`}
-                unit=""
-                prefix="£"
-                value={solarCost}
-                onChange={handleSolarCostChange}
-                min={0}
-                max={15000}
-                step={250}
-                color={C.yellow}
-                clampMode={(clamps.solarCost || {}).mode}
-                clampMin={(clamps.solarCost || {}).min}
-                clampMax={(clamps.solarCost || {}).max}
-                onClampChange={(lo: number, hi: number) =>
-                  setClamps((p: any) => ({ ...p, solarCost: { ...(p.solarCost || { mode: "clamp" }), min: lo, max: hi } }))
-                }
-                onCycleClamp={() => cycleClamp("solarCost", solarCost, 0, 15000)}
-              />
-              <Slider
                 label={`Battery Size (${batteryKWh}kWh)`}
                 unit=""
                 prefix="£"
@@ -1622,7 +1663,6 @@ export default function EnergySimulator() {
               <h3 className="text-xl font-bold mb-8">Usage Configuration</h3>
               <Slider label="Annual Gas" unit=" kWh" value={annualGas} onChange={setAnnualGas} min={5000} max={25000} step={500} color={C.orange} />
               <Slider label="Annual Electricity" unit=" kWh" value={annualElec} onChange={setAnnualElec} min={1000} max={8000} step={100} color={C.orange} />
-              <Slider label="Hot Water" unit=" kWh/day" value={hotWaterKWhPerDay} onChange={setHotWaterKWhPerDay} min={5} max={20} step={1} color={C.orange} />
               <Slider
                 label="HP Flow Temp"
                 unit="°C"
@@ -1663,6 +1703,24 @@ export default function EnergySimulator() {
                     setClamps((p: any) => ({ ...p, solarKWp: { ...(p.solarKWp || { mode: "clamp" }), min: lo, max: hi } }))
                   }
                   onCycleClamp={() => cycleClamp("solarKWp", solarKWp, 0, 12)}
+                />
+                <Slider
+                  label="Price"
+                  unit=""
+                  prefix="£"
+                  value={solarCost}
+                  onChange={handleSolarCostChange}
+                  min={0}
+                  max={15000}
+                  step={250}
+                  color={C.yellow}
+                  clampMode={(clamps.solarCost || {}).mode}
+                  clampMin={(clamps.solarCost || {}).min}
+                  clampMax={(clamps.solarCost || {}).max}
+                  onClampChange={(lo: number, hi: number) =>
+                    setClamps((p: any) => ({ ...p, solarCost: { ...(p.solarCost || { mode: "clamp" }), min: lo, max: hi } }))
+                  }
+                  onCycleClamp={() => cycleClamp("solarCost", solarCost, 0, 15000)}
                 />
                 <Slider label="Tilt" unit="°" value={solarTilt} onChange={setSolarTilt} min={0} max={90} step={5} color={C.yellow} />
                 <Slider label="Azimuth" unit="°" value={solarAzimuth} onChange={setSolarAzimuth} min={0} max={355} step={5} color={C.yellow} />
@@ -1963,6 +2021,18 @@ export default function EnergySimulator() {
               setViewEnd(Math.min(e, log.length));
             };
 
+            const onQuickZoom = (days: number | "all") => {
+              if (days === "all") {
+                setViewStart(0);
+                setViewEnd(log.length);
+              } else {
+                const center = (viewStart + viewEnd) / 2;
+                const span = days * 48;
+                setViewStart(Math.max(0, Math.floor(center - span / 2)));
+                setViewEnd(Math.min(log.length, Math.floor(center + span / 2)));
+              }
+            };
+
             const Leg = ({ items }: any) => (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 2, marginBottom: 6 }}>
                 {items.map(({ color, label, k }: any) => (
@@ -2030,7 +2100,14 @@ export default function EnergySimulator() {
                       Day {Math.floor(viewStart / 48) + 1}–{Math.ceil(viewEnd / 48)} of {Math.ceil(log.length / 48)}
                     </span>
                   </div>
-                  <RangeBrush total={log.length} start={viewStart} end={viewEnd} onChange={onRangeChange} color={C.accent} />
+                  <RangeBrush
+                    total={log.length}
+                    start={viewStart}
+                    end={viewEnd}
+                    onChange={onRangeChange}
+                    onQuickZoom={onQuickZoom}
+                    color={C.accent}
+                  />
                 </div>
 
                 <div
@@ -2092,15 +2169,14 @@ export default function EnergySimulator() {
                 </div>
 
                 <div
+                  className="glass-card"
                   style={{
-                    background: C.card,
-                    border: `1px solid ${C.border}`,
                     borderRadius: 10,
                     padding: 13,
                     marginBottom: 10,
                   }}
                 >
-                  <h3 style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px" }}>Home Energy</h3>
+                  <h3 style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px" }}>Home Energy (stacked = total demand)</h3>
                   <Leg
                     items={[
                       { color: C.yellow, label: "Solar→Home", k: "sd" },
@@ -2110,7 +2186,7 @@ export default function EnergySimulator() {
                   />
                   <TouchChart height={170}>
                     <ResponsiveContainer>
-                      <BarChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }}>
+                      <BarChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }} barCategoryGap={0} barGap={0}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                         <XAxis dataKey="slot" tick={{ fontSize: 8, fill: C.muted }} tickFormatter={xFmt} />
                         <YAxis tick={{ fontSize: 8, fill: C.muted }} unit="kWh" />
@@ -2149,6 +2225,276 @@ export default function EnergySimulator() {
                     </ResponsiveContainer>
                   </TouchChart>
                 </div>
+
+                {/* Chart 3: Heating & Weather */}
+                <div
+                  className="glass-card"
+                  style={{
+                    borderRadius: 10,
+                    padding: 13,
+                    marginBottom: 10,
+                  }}
+                >
+                  <h3 style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px" }}>Weather & Heating Demand</h3>
+                  <Leg
+                    items={[
+                      { color: C.orange, label: "Heating (kWh)", k: "hd" },
+                      { color: C.blue, label: "Temp (°C)", k: "tp" },
+                    ]}
+                  />
+                  <TouchChart height={170}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                        <XAxis dataKey="slot" tick={{ fontSize: 8, fill: C.muted }} tickFormatter={xFmt} />
+                        <YAxis yAxisId="hd" tick={{ fontSize: 8, fill: C.muted }} unit="kWh" />
+                        <YAxis yAxisId="tp" orientation="right" tick={{ fontSize: 8, fill: C.muted }} unit="°C" />
+                        <Tooltip contentStyle={ttS} labelFormatter={ttFmt} />
+                        {!hid.hd && (
+                          <Area
+                            yAxisId="hd"
+                            type="monotone"
+                            dataKey="heatingDemand"
+                            fill={C.orange}
+                            stroke={C.orange}
+                            opacity={0.3}
+                            name="Heating"
+                            isAnimationActive={false}
+                          />
+                        )}
+                        {!hid.tp && (
+                          <Line
+                            yAxisId="tp"
+                            type="monotone"
+                            dataKey="temp"
+                            stroke={C.blue}
+                            dot={false}
+                            strokeWidth={2}
+                            name="Temp"
+                            isAnimationActive={false}
+                          />
+                        )}
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </TouchChart>
+                </div>
+
+                {/* Chart 4: Charging & Export */}
+                <div
+                  className="glass-card"
+                  style={{
+                    borderRadius: 10,
+                    padding: 13,
+                    marginBottom: 10,
+                  }}
+                >
+                  <h3 style={{ fontSize: 12, fontWeight: 600, margin: "0 0 4px" }}>Battery Charging & Export</h3>
+                  <Leg
+                    items={[
+                      { color: C.yellow, label: "Solar→Batt", k: "sbb" },
+                      { color: "#3b82f6", label: "Grid→Batt", k: "gb" },
+                      { color: C.purple, label: "Batt→Grid", k: "be" },
+                      { color: C.green, label: "Solar→Grid", k: "se" },
+                    ]}
+                  />
+                  <TouchChart height={170}>
+                    <ResponsiveContainer>
+                      <BarChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 0 }} barCategoryGap={0} barGap={0}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                        <XAxis dataKey="slot" tick={{ fontSize: 8, fill: C.muted }} tickFormatter={xFmt} />
+                        <YAxis tick={{ fontSize: 8, fill: C.muted }} unit="kWh" />
+                        <Tooltip contentStyle={ttS} labelFormatter={ttFmt} />
+                        {!hid.sbb && (
+                          <Bar dataKey="solarBatt" stackId="ce" fill={C.yellow} opacity={0.85} name="Solar→Batt" isAnimationActive={false} />
+                        )}
+                        {!hid.gb && (
+                          <Bar dataKey="gridBatt" stackId="ce" fill="#3b82f6" opacity={0.85} name="Grid→Batt" isAnimationActive={false} />
+                        )}
+                        {!hid.be && (
+                          <Bar dataKey="battExport" stackId="ce" fill={C.purple} opacity={0.85} name="Batt→Grid" isAnimationActive={false} />
+                        )}
+                        {!hid.se && (
+                          <Bar dataKey="solarExport" stackId="ce" fill={C.green} opacity={0.85} name="Solar→Grid" isAnimationActive={false} />
+                        )}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </TouchChart>
+                </div>
+
+                <div style={{ fontSize: 9, color: C.dim, lineHeight: 1.5, padding: "0 4px 8px" }}>
+                  Showing {MONTHS[detailMonth]} ({log.length / 48} days). Sankey: full annual flows. Tap legend to toggle lines.
+                </div>
+
+                {/* Sankey */}
+                <div
+                  className="glass-card"
+                  style={{
+                    borderRadius: 10,
+                    padding: 13,
+                    marginBottom: 10,
+                  }}
+                >
+                  <h3 style={{ fontSize: 12, fontWeight: 600, margin: "0 0 10px" }}>Annual Energy Flow</h3>
+                  <svg viewBox="0 0 400 220" style={{ width: "100%", height: "auto" }}>
+                    {(() => {
+                      const ms_ = results.months;
+                      const sA = {
+                        solarSelf: ms_.reduce((s, m) => s + m.solarSelfConsumed, 0),
+                        solarBatt: ms_.reduce((s, m) => s + Math.max(0, m.solarGen - m.solarSelfConsumed - m.solarExport), 0),
+                        solarExport: ms_.reduce((s, m) => s + m.solarExport, 0),
+                        gridHome: ms_.reduce((s, m) => s + m.gridImport - m.gridBatt, 0),
+                        gridBatt: ms_.reduce((s, m) => s + m.gridBatt, 0),
+                        battHome: ms_.reduce((s, m) => s + m.battHome, 0),
+                        battExport: ms_.reduce((s, m) => s + m.battExport, 0),
+                      };
+                      const fk = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}MWh` : `${Math.round(v)}kWh`);
+
+                      const allFlows = [
+                        { from: "solar", to: "home", val: sA.solarSelf, color: C.yellow, id: "sh" },
+                        { from: "solar", to: "batt", val: sA.solarBatt, color: C.yellow, id: "sb" },
+                        { from: "solar", to: "export", val: sA.solarExport, color: C.yellow, id: "se" },
+                        { from: "grid", to: "home", val: sA.gridHome, color: C.red, id: "gh" },
+                        { from: "grid", to: "batt", val: sA.gridBatt, color: "#60a5fa", id: "gb" },
+                        { from: "batt", to: "home", val: sA.battHome, color: C.accent, id: "bh" },
+                        { from: "batt", to: "export", val: sA.battExport, color: C.purple, id: "be" },
+                      ].filter((f) => f.val > 10);
+
+                      if (allFlows.length === 0)
+                        return (
+                          <text x={200} y={110} fill={C.dim} fontSize="11" textAnchor="middle">
+                            No flows to display
+                          </text>
+                        );
+
+                      const barW = 10;
+                      const col = [15, 175, 375];
+                      const totalH = 190,
+                        topPad = 10;
+
+                      const totals: any = {};
+                      for (const f of allFlows) {
+                        if (!totals[f.from]) totals[f.from] = { out: 0, in: 0 };
+                        if (!totals[f.to]) totals[f.to] = { out: 0, in: 0 };
+                        totals[f.from].out += f.val;
+                        totals[f.to].in += f.val;
+                      }
+                      const nodeSize: any = {};
+                      for (const [k, v] of Object.entries(totals)) nodeSize[k] = Math.max((v as any).out, (v as any).in);
+                      const maxVal = Math.max(1, ...Object.values(nodeSize).map((v: any) => Number(v)));
+                      const scale = totalH / maxVal;
+
+                      const nodeDefs = [
+                        { id: "solar", col: 0, color: C.yellow, label: `${fk(results.solarGenerated)} Solar` },
+                        { id: "grid", col: 0, color: C.red, label: `${fk(results.gridImport)} Grid` },
+                        { id: "batt", col: 1, color: C.accent, label: `Battery ${batteryKWh}kWh` },
+                        {
+                          id: "home",
+                          col: 2,
+                          color: C.green,
+                          label: `${fk(results.months.reduce((s, m) => s + m.elecUsage + m.hpElec, 0))} Home`,
+                        },
+                        { id: "export", col: 2, color: C.purple, label: `${fk(results.gridExport)} Export` },
+                      ].filter((n) => nodeSize[n.id]);
+
+                      const colNodes: any[][] = [[], [], []];
+                      for (const n of nodeDefs) colNodes[n.col].push(n);
+
+                      const nodePos: any = {};
+                      for (let c = 0; c < 3; c++) {
+                        const ns = colNodes[c];
+                        const totalBarH = ns.reduce((s, n) => s + nodeSize[n.id] * scale, 0);
+                        const gapTotal = Math.max(0, (ns.length - 1) * 12);
+                        let y = topPad + (totalH - totalBarH - gapTotal) / 2;
+                        for (const n of ns) {
+                          const h = Math.max(8, nodeSize[n.id] * scale);
+                          nodePos[n.id] = { x: col[c], y, h, color: n.color, label: n.label, col: c };
+                          y += h + 12;
+                        }
+                      }
+
+                      const outOff: any = {},
+                        inOff: any = {};
+                      for (const id of Object.keys(nodePos)) {
+                        outOff[id] = 0;
+                        inOff[id] = 0;
+                      }
+
+                      const flowOrder = ["sh", "sb", "se", "gb", "gh", "bh", "be"];
+                      const ordered = flowOrder.map((id) => allFlows.find((f) => f.id === id)).filter(Boolean);
+
+                      const ribbons = ordered.map((f: any) => {
+                        const sn = nodePos[f.from],
+                          dn = nodePos[f.to];
+                        const sh = (f.val / Math.max(1, totals[f.from].out)) * sn.h;
+                        const dh = (f.val / Math.max(1, totals[f.to].in)) * dn.h;
+                        const sy = sn.y + outOff[f.from];
+                        const dy = dn.y + inOff[f.to];
+                        outOff[f.from] += sh;
+                        inOff[f.to] += dh;
+                        return { color: f.color, val: f.val, sx: sn.x + barW, sy, sh, dx: dn.x, dy, dh };
+                      });
+
+                      return (
+                        <g>
+                          {ribbons.map((r, i) => {
+                            const mx = (r.sx + r.dx) / 2;
+                            return (
+                              <path
+                                key={i}
+                                d={[
+                                  `M${r.sx},${r.sy}`,
+                                  `C${mx},${r.sy} ${mx},${r.dy} ${r.dx},${r.dy}`,
+                                  `L${r.dx},${r.dy + r.dh}`,
+                                  `C${mx},${r.dy + r.dh} ${mx},${r.sy + r.sh} ${r.sx},${r.sy + r.sh}`,
+                                  `Z`,
+                                ].join(" ")}
+                                fill={r.color}
+                                opacity={0.3}
+                              />
+                            );
+                          })}
+                          {ribbons.map((r, i) => {
+                            const mx = (r.sx + r.dx) / 2;
+                            const ly = (r.sy + r.sh / 2 + r.dy + r.dh / 2) / 2;
+                            return (
+                              <text
+                                key={`t${i}`}
+                                x={mx}
+                                y={ly}
+                                fill={r.color}
+                                fontSize="7"
+                                textAnchor="middle"
+                                fontFamily={mono}
+                                opacity={0.85}
+                              >
+                                {fk(r.val)}
+                              </text>
+                            );
+                          })}
+                          {Object.entries(nodePos).map(([id, n]: any) => {
+                            const nd = nodeDefs.find((d) => d.id === id);
+                            const labelRight = n.col < 2;
+                            return (
+                              <g key={id}>
+                                <rect x={n.x} y={n.y} width={barW} height={n.h} rx={3} fill={n.color} opacity={0.85} />
+                                <text
+                                  x={labelRight ? n.x + barW + 5 : n.x - 5}
+                                  y={n.y + n.h / 2 + 4}
+                                  fill={n.color}
+                                  fontSize="9"
+                                  fontWeight="600"
+                                  textAnchor={labelRight ? "start" : "end"}
+                                >
+                                  {nd ? nd.label : id}
+                                </text>
+                              </g>
+                            );
+                          })}
+                        </g>
+                      );
+                    })()}
+                  </svg>
+                </div>
               </div>
             );
           })()}
@@ -2168,8 +2514,15 @@ export default function EnergySimulator() {
                     </span>
                   )}
                 </div>
-                <div className="flex gap-4 mb-4">
-                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                <div className="flex flex-wrap gap-4 mb-4">
+                  <button
+                    onClick={() => pullAgileData(false)}
+                    disabled={isPulling.import}
+                    className="flex-1 min-w-[140px] bg-orange-500 py-3 rounded-full font-bold text-[10px] uppercase tracking-widest hover:bg-orange-600 transition disabled:opacity-50"
+                  >
+                    {isPulling.import ? `Pulling ${(pullProgress.import * 100).toFixed(0)}%` : "Pull from Octopus API"}
+                  </button>
+                  <label className="flex-1 min-w-[140px] glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest flex items-center justify-center">
                     {priceData ? "Replace File" : "Upload CSV/JSON"}
                     <input
                       type="file"
@@ -2185,7 +2538,7 @@ export default function EnergySimulator() {
                       setPasteMode(pasteMode === "agile" ? null : "agile");
                       setPasteText("");
                     }}
-                    className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
+                    className={`flex-1 min-w-[140px] glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
                       pasteMode === "agile" ? "bg-orange-500 text-white" : "hover:bg-white/5 text-orange-400"
                     }`}
                   >
@@ -2205,7 +2558,26 @@ export default function EnergySimulator() {
                     </button>
                   </div>
                 )}
-                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Direct API Links:</div>
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Helpful Links:</div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <a
+                    href="https://energy-stats.uk/download-historical-pricing-data/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="glass-pill px-3 py-1 text-[9px] font-bold text-orange-300 hover:bg-white/10 transition"
+                  >
+                    Energy Stats (Historical CSVs)
+                  </a>
+                  <a
+                    href="https://octopus.energy/dashboard/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="glass-pill px-3 py-1 text-[9px] font-bold text-orange-300 hover:bg-white/10 transition"
+                  >
+                    Octopus Dashboard
+                  </a>
+                </div>
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Direct API Links (Select All → Copy → Paste):</div>
                 <div className="flex flex-wrap gap-2 mb-2">
                   {agileMonthUrls.map((m, i) => (
                     <a
@@ -2231,8 +2603,15 @@ export default function EnergySimulator() {
                     </span>
                   )}
                 </div>
-                <div className="flex gap-4 mb-4">
-                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                <div className="flex flex-wrap gap-4 mb-4">
+                  <button
+                    onClick={() => pullAgileData(true)}
+                    disabled={isPulling.export}
+                    className="flex-1 min-w-[140px] bg-purple-500 py-3 rounded-full font-bold text-[10px] uppercase tracking-widest hover:bg-purple-600 transition disabled:opacity-50"
+                  >
+                    {isPulling.export ? `Pulling ${(pullProgress.export * 100).toFixed(0)}%` : "Pull from Octopus API"}
+                  </button>
+                  <label className="flex-1 min-w-[140px] glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest flex items-center justify-center">
                     {exportPriceData ? "Replace File" : "Upload CSV/JSON"}
                     <input
                       type="file"
@@ -2248,7 +2627,7 @@ export default function EnergySimulator() {
                       setPasteMode(pasteMode === "export" ? null : "export");
                       setPasteText("");
                     }}
-                    className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
+                    className={`flex-1 min-w-[140px] glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
                       pasteMode === "export" ? "bg-purple-500 text-white" : "hover:bg-white/5 text-purple-400"
                     }`}
                   >
@@ -2287,15 +2666,22 @@ export default function EnergySimulator() {
 
               <div className="mb-6 p-6 bg-yellow-500/5 rounded-2xl border border-yellow-500/10">
                 <div className="flex justify-between items-center mb-4">
-                  <h4 className="text-sm font-bold text-yellow-400 uppercase tracking-wider">☀️ Solar Irradiance</h4>
+                  <h4 className="text-sm font-bold text-yellow-400 uppercase tracking-wider">☀️ Solar & Weather Data</h4>
                   {solarDataProcessed && (
                     <span className="glass-pill px-3 py-1 text-[10px] text-green-400 font-bold">
                       {Object.keys(solarRaw).length}d loaded
                     </span>
                   )}
                 </div>
-                <div className="flex gap-4 mb-4">
-                  <label className="flex-1 glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest">
+                <div className="flex flex-wrap gap-4 mb-4">
+                  <button
+                    onClick={pullSolarData}
+                    disabled={isPulling.solar}
+                    className="flex-1 min-w-[140px] bg-yellow-500 py-3 rounded-full font-bold text-[10px] uppercase tracking-widest hover:bg-yellow-600 transition disabled:opacity-50 text-slate-900"
+                  >
+                    {isPulling.solar ? `Pulling ${(pullProgress.solar * 100).toFixed(0)}%` : "Pull from Open-Meteo"}
+                  </button>
+                  <label className="flex-1 min-w-[140px] glass-pill py-3 text-center cursor-pointer hover:bg-white/5 transition font-bold text-[10px] uppercase tracking-widest flex items-center justify-center">
                     {solarDataProcessed ? "Replace File" : "Upload CSV/JSON"}
                     <input
                       type="file"
@@ -2311,7 +2697,7 @@ export default function EnergySimulator() {
                       setPasteMode(pasteMode === "solar" ? null : "solar");
                       setPasteText("");
                     }}
-                    className={`flex-1 glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
+                    className={`flex-1 min-w-[140px] glass-pill py-3 transition font-bold text-[10px] uppercase tracking-widest ${
                       pasteMode === "solar" ? "bg-yellow-500 text-white" : "hover:bg-white/5 text-yellow-400"
                     }`}
                   >
@@ -2331,15 +2717,31 @@ export default function EnergySimulator() {
                     </button>
                   </div>
                 )}
-                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">API Link:</div>
-                <a
-                  href={solarApiUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-block glass-pill px-4 py-2 text-[9px] font-bold text-yellow-300 hover:bg-white/10 transition uppercase tracking-widest"
-                >
-                  Open Open-Meteo API
-                </a>
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Weather Impact:</div>
+                <div className="text-[10px] text-slate-400 mb-4 italic leading-relaxed">
+                  Real weather data includes historical temperature profiles. When loaded, the simulator uses these to model
+                  heating demand more accurately. For example, colder days will automatically increase electricity consumption
+                  if you have a heat pump, affecting battery management strategies.
+                </div>
+                <div className="text-[10px] text-slate-500 mb-2 font-bold uppercase tracking-tight">Helpful Links:</div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <a
+                    href="https://re.jrc.ec.europa.eu/pvg_tools/en/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="glass-pill px-3 py-1 text-[9px] font-bold text-yellow-300 hover:bg-white/10 transition"
+                  >
+                    PVGIS (Solar Estimation)
+                  </a>
+                  <a
+                    href={solarApiUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="glass-pill px-3 py-1 text-[9px] font-bold text-yellow-300 hover:bg-white/10 transition"
+                  >
+                    Open-Meteo API (JSON)
+                  </a>
+                </div>
               </div>
 
               <div className="flex flex-col gap-4 mb-6">

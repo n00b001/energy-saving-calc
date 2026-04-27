@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback, useState } from "react";
+import React, { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import {
   AreaChart,
   Area,
@@ -21,12 +21,14 @@ export function RangeBrush({
   end,
   onChange,
   color = C.accent,
+  onQuickZoom,
 }: {
   total: number;
   start: number;
   end: number;
   onChange: (s: number, e: number) => void;
   color?: string;
+  onQuickZoom?: (days: number | "all") => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const loRef = useRef<HTMLDivElement>(null);
@@ -239,6 +241,20 @@ export function RangeBrush({
       >
         {Math.ceil(end / 48)}
       </div>
+
+      {onQuickZoom && (
+        <div className="flex gap-2 mt-4">
+          {[3, 7, 14, "all"].map((d) => (
+            <button
+              key={d}
+              onClick={() => onQuickZoom(d as any)}
+              className="glass-pill px-2 py-0.5 text-[8px] font-bold text-slate-500 hover:text-accent transition uppercase tracking-tighter"
+            >
+              {d === "all" ? "ALL" : `${d}D`}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -507,80 +523,91 @@ export function CumulativeChart({
   financeTerm: number;
   useFinance: boolean;
 }) {
-  const yrs = 20;
-  const pts = [];
-  let cum = useFinance ? 0 : -totalCost;
-  for (let y = 0; y <= yrs; y++) {
-    if (useFinance) cum += annualSaving - (y > 0 && y <= financeTerm ? financeMonthly * 12 : 0);
-    else cum += y > 0 ? annualSaving : 0;
-    pts.push({ year: y, value: cum });
-  }
-  const minV = Math.min(...pts.map((p) => p.value)),
-    maxV = Math.max(...pts.map((p) => p.value));
-  const range = maxV - minV || 1;
-  const w = 480,
-    h = 150,
-    pad = 20;
-  const zY = pad + (maxV / range) * (h - 2 * pad);
-  const beY = pts.find((p) => p.value >= 0)?.year;
+  const yrs = 25;
+  const fullData = useMemo(() => {
+    const pts = [];
+    let cum = useFinance ? -0 : -totalCost;
+    for (let y = 0; y <= yrs; y++) {
+      if (y > 0) {
+        const finY = useFinance && y <= financeTerm ? financeMonthly * 12 : 0;
+        cum += annualSaving - finY;
+      }
+      pts.push({ year: y, value: Math.round(cum), label: `Year ${y}` });
+    }
+    return pts;
+  }, [annualSaving, totalCost, financeMonthly, financeTerm, useFinance]);
+
+  const [viewStart, setViewStart] = useState(0);
+  const [viewEnd, setViewEnd] = useState(yrs);
+
+  const chartData = useMemo(() => fullData.slice(viewStart, viewEnd + 1), [fullData, viewStart, viewEnd]);
+
   return (
-    <div>
-      <svg width="100%" height={h + 20} viewBox={`0 0 ${w} ${h + 20}`} preserveAspectRatio="none">
-        <line x1="0" y1={zY} x2={w} y2={zY} stroke={C.muted} strokeWidth="1" strokeDasharray="4,4" />
-        <polygon
-          fill={C.green}
-          opacity="0.15"
-          points={`${pts
-            .map((p, i) => {
-              const x = (i / yrs) * w,
-                y = pad + ((maxV - p.value) / range) * (h - 2 * pad);
-              return `${x},${y}`;
-            })
-            .join(" ")} ${w},${zY} 0,${zY}`}
-        />
-        <polyline
-          fill="none"
-          stroke={C.green}
-          strokeWidth="3"
-          points={pts
-            .map((p, i) => {
-              const x = (i / yrs) * w,
-                y = pad + ((maxV - p.value) / range) * (h - 2 * pad);
-              return `${x},${y}`;
-            })
-            .join(" ")}
-        />
-        {beY != null && (
-          <g>
-            <line
-              x1={(beY / yrs) * w}
-              y1={pad - 4}
-              x2={(beY / yrs) * w}
-              y2={h - pad + 4}
-              stroke={C.accent}
-              strokeWidth="2"
-              strokeDasharray="4,4"
-            />
-            <text
-              x={(beY / yrs) * w}
-              y={pad - 10}
-              fill={C.accent}
-              fontSize="12"
-              textAnchor="middle"
-              fontFamily={mono}
-            >
-              Yr {beY}
-            </text>
-          </g>
-        )}
-      </svg>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginTop: 0 }}>
-        {[0, 5, 10, 15, 20].map((y) => (
-          <span key={y} style={{ flex: 1, textAlign: "center" }}>
-            Y{y}
-          </span>
-        ))}
+    <div className="flex flex-col gap-4">
+      <div className="flex justify-between items-center mb-2">
+        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+          25-Year Cumulative Cashflow
+        </span>
+        <span className="text-[10px] text-accent font-mono">
+          Years {viewStart}–{viewEnd}
+        </span>
       </div>
+
+      <RangeBrush
+        total={yrs}
+        start={viewStart}
+        end={viewEnd}
+        onChange={(s, e) => {
+          setViewStart(s);
+          setViewEnd(e);
+        }}
+        onQuickZoom={(d) => {
+          if (d === "all") {
+            setViewStart(0);
+            setViewEnd(yrs);
+          } else {
+            const center = (viewStart + viewEnd) / 2;
+            const span = Number(d);
+            setViewStart(Math.max(0, Math.floor(center - span / 2)));
+            setViewEnd(Math.min(yrs, Math.floor(center + span / 2)));
+          }
+        }}
+      />
+
+      <TouchChart height={200}>
+        <ResponsiveContainer>
+          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={C.green} stopOpacity={0.3} />
+                <stop offset="95%" stopColor={C.green} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+            <XAxis dataKey="year" tick={{ fontSize: 10, fill: C.muted }} axisLine={false} tickLine={false} />
+            <YAxis
+              tick={{ fontSize: 10, fill: C.muted }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v) => `£${(v / 1000).toFixed(0)}k`}
+            />
+            <Tooltip
+              contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "12px" }}
+              formatter={(v: number) => [fmt(v), "Cumulative"]}
+              labelStyle={{ color: C.accent, fontWeight: "bold", marginBottom: "4px" }}
+            />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke={C.green}
+              strokeWidth={3}
+              fillOpacity={1}
+              fill="url(#colorValue)"
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </TouchChart>
     </div>
   );
 }
