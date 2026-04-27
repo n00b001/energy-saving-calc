@@ -7,8 +7,14 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const plugins = [react(), tailwindcss()];
+
+  if (mode !== 'test') {
+    plugins.push(cloudflare());
+  }
+
   return {
-    plugins: [react(), tailwindcss(), cloudflare()],
+    plugins,
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
