@@ -1,6 +1,0 @@
-{
-  "name": "Octopus Agile Energy Simulator",
-  "description": "A comprehensive energy transition tool for modeling home decarbonisation (Solar, Battery, Heat Pump) using real Octopus Agile price data and solar irradiance models.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}

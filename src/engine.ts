@@ -144,10 +144,12 @@ export function monthlySolarStats(solarDays: any, arrays: any[]) {
     avgDailyKWh: 0,
     totalGHI: 0,
     dailyOutputs: [] as number[][],
+    dailyTemps: [] as number[][],
   }));
 
   for (const [date, dayData] of Object.entries(solarDays)) {
     const m = parseInt(date.split("-")[1]) - 1;
+    const dData = dayData as any;
     const dayOutput = new Array(48).fill(0);
     for (const arr of arrays) {
       if (arr.kWp <= 0) continue;
@@ -163,6 +165,7 @@ export function monthlySolarStats(solarDays: any, arrays: any[]) {
     stats[m].peakDay = Math.max(stats[m].peakDay, dayTotal);
     stats[m].worstDay = Math.min(stats[m].worstDay, dayTotal);
     stats[m].dailyOutputs.push(dayOutput);
+    stats[m].dailyTemps.push(dData.temp || new Array(24).fill(UK_MONTHLY_TEMPS[m]));
   }
 
   for (const s of stats) {
@@ -172,6 +175,118 @@ export function monthlySolarStats(solarDays: any, arrays: any[]) {
     }
   }
   return stats;
+}
+
+export async function fetchSolarData(lat: number, lon: number, onProgress?: (p: number) => void) {
+  const now = new Date();
+  const oneYearAgo = new Date(now);
+  oneYearAgo.setFullYear(now.getFullYear() - 1);
+  const endDate = new Date(now);
+  endDate.setDate(endDate.getDate() - 7);
+  const startStr = oneYearAgo.toISOString().split("T")[0];
+  const endStr = endDate.toISOString().split("T")[0];
+
+  onProgress && onProgress(0.1);
+  const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&start_date=${startStr}&end_date=${endStr}&hourly=shortwave_radiation,temperature_2m,cloud_cover&timezone=Europe%2FLondon`;
+
+  let resp;
+  try {
+    resp = await fetch(url);
+  } catch (fetchErr: any) {
+    throw new Error(`Fetch failed: ${fetchErr.message || "Network/CORS error"}. Upload a CSV instead.`);
+  }
+  if (!resp.ok) throw new Error(`API returned ${resp.status} ${resp.statusText}`);
+  onProgress && onProgress(0.6);
+
+  const data = await resp.json();
+  onProgress && onProgress(0.9);
+
+  if (!data.hourly || !data.hourly.shortwave_radiation) {
+    throw new Error("No solar radiation data returned");
+  }
+
+  const days: any = {};
+  const times = data.hourly.time;
+  const ghi = data.hourly.shortwave_radiation;
+  const temp = data.hourly.temperature_2m;
+  const cloud = data.hourly.cloud_cover;
+
+  for (let i = 0; i < times.length; i++) {
+    const dateKey = times[i].substring(0, 10);
+    if (!days[dateKey]) days[dateKey] = { ghi: [], temp: [], cloud: [] };
+    days[dateKey].ghi.push(ghi[i] || 0);
+    days[dateKey].temp.push(temp[i] || 10);
+    days[dateKey].cloud.push(cloud[i] || 50);
+  }
+
+  const completeDays: any = {};
+  for (const [date, d] of Object.entries(days)) {
+    const entry = d as any;
+    if (entry.ghi.length >= 23) {
+      while (entry.ghi.length < 24) {
+        entry.ghi.push(0);
+        entry.temp.push(entry.temp[entry.temp.length - 1] || 10);
+        entry.cloud.push(50);
+      }
+      completeDays[date] = entry;
+    }
+  }
+
+  onProgress && onProgress(1.0);
+  return completeDays;
+}
+
+export async function fetchAgileData(region: string, product: string, onProgress?: (p: number) => void) {
+  const tariffCode = `E-1R-${product}-${region}`;
+  const baseUrl = `https://api.octopus.energy/v1/products/${product}/electricity-tariffs/${tariffCode}/standard-unit-rates/`;
+
+  const now = new Date();
+  const oneYearAgo = new Date(now);
+  oneYearAgo.setFullYear(now.getFullYear() - 1);
+
+  const testUrl = `${baseUrl}?page_size=2`;
+  let testResp;
+  try {
+    testResp = await fetch(testUrl);
+  } catch (fetchErr: any) {
+    throw new Error(`Fetch failed: ${fetchErr.message || "Network/CORS error"}. Upload a CSV instead.`);
+  }
+  if (!testResp.ok) {
+    throw new Error(`API returned ${testResp.status} ${testResp.statusText}. Check region code.`);
+  }
+  onProgress && onProgress(0.05);
+
+  const allResults: any[] = [];
+  let fetched = 0;
+  for (let m = 0; m < 12; m++) {
+    const from = new Date(oneYearAgo);
+    from.setMonth(oneYearAgo.getMonth() + m);
+    const to = new Date(from);
+    to.setMonth(from.getMonth() + 1);
+    const periodFrom = from.toISOString().replace(/\.\d+Z/, "Z");
+    const periodTo = to.toISOString().replace(/\.\d+Z/, "Z");
+    try {
+      const url = `${baseUrl}?period_from=${periodFrom}&period_to=${periodTo}&page_size=1500`;
+      const resp = await fetch(url);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.results) allResults.push(...data.results);
+      }
+    } catch (e) {}
+    fetched++;
+    onProgress && onProgress(0.05 + (fetched / 12) * 0.95);
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  allResults.sort((a, b) => new Date(a.valid_from).getTime() - new Date(b.valid_from).getTime());
+  const seen = new Set();
+  const deduped = allResults.filter((r) => {
+    if (seen.has(r.valid_from)) return false;
+    seen.add(r.valid_from);
+    return true;
+  });
+
+  return deduped;
 }
 
 export function calcMP(principal: number, rate: number, years: number) {
@@ -198,7 +313,6 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
     hpFlowTemp,
     exportRate,
     agileStanding,
-    hotWaterKWhPerDay,
     solarTilt,
     solarAzimuth,
     extraSolarArrays = [],
@@ -207,10 +321,8 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
 
   const solarArrays = [{ kWp: solarKWp, tilt: solarTilt, azimuth: solarAzimuth }, ...extraSolarArrays];
 
-  const annualHotWaterGas = hotWaterKWhPerDay * 365;
-  const annualHeatingGas = Math.max(0, annualGas - annualHotWaterGas);
+  const annualHeatingGas = annualGas;
   const annualUsefulHeat = annualHeatingGas * (boilerEfficiency / 100);
-  const annualHotWaterHeat = annualHotWaterGas * (boilerEfficiency / 100);
 
   const hasRealData = priceData && Object.keys(priceData.dayData).length > 100;
   const monthStats = hasRealData ? priceData.monthStats : null;
@@ -241,7 +353,7 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
       gasMonthRaw.push(gasUsage.monthStats[m].avgDailyKWh * days);
     } else {
       const heating = gasSeasonTotal > 0 ? (annualHeatingGas * gasSeasonFactors[m]) / gasSeasonTotal : 0;
-      gasMonthRaw.push(heating + annualHotWaterGas / 12);
+      gasMonthRaw.push(heating);
     }
   }
 
@@ -296,10 +408,8 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
     const currentElecCost = monthElec * (fixedElecRate / 100) + (fixedElecStanding / 100) * days;
     const currentTotal = currentGasCost + currentElecCost;
 
-    const monthHeatingGas = Math.max(0, monthGas - annualHotWaterGas / 12);
-    const monthUsefulHeat = monthHeatingGas * (boilerEfficiency / 100);
-    const hwCOP = Math.max(2.0, cop * 0.7);
-    const hpTotalElec = monthUsefulHeat / cop + annualHotWaterHeat / 12 / hwCOP;
+    const monthUsefulHeat = monthGas * (boilerEfficiency / 100);
+    const hpTotalElec = monthUsefulHeat / cop;
 
     const realProfiles = elecProfilesPerMonth[m];
     let scaledProfiles = null;
@@ -314,8 +424,10 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
     let monthSolar = 0;
     let daySolarArrays = null;
 
+    let dayTempArrays = null;
     if (hasRealSolar) {
       daySolarArrays = solarData.stats[m].dailyOutputs;
+      dayTempArrays = solarData.stats[m].dailyTemps;
       monthSolar = (solarData.stats[m].totalKWh / solarData.stats[m].days) * days;
     } else {
       for (const arr of solarArrays) {
@@ -361,14 +473,34 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
       const dayExportPrices = dayExportPriceArrays ? dayExportPriceArrays[d % dayExportPriceArrays.length] : null;
 
       const daySolar = [],
-        dayDemand = [];
+        dayDemand = [],
+        dayHeating = [];
+
+      let dayCop = cop;
+      let dayHeatingWeight = 1.0;
+
+      if (dayTempArrays) {
+        const dTempArr = dayTempArrays[d % dayTempArrays.length];
+        const avgT = dTempArr.reduce((a: number, b: number) => a + b, 0) / dTempArr.length;
+        dayCop = heatPumpCOP(avgT) * copMult;
+        // Degree days relative to 15.5C base
+        const dd = Math.max(0, 15.5 - avgT);
+        const monthAvgDD = heatingDegrees(temp);
+        dayHeatingWeight = monthAvgDD > 0 ? dd / monthAvgDD : 1.0;
+      }
+
       for (let s = 0; s < 48; s++) {
         const bd = scaledProfiles ? scaledProfiles[d % scaledProfiles.length][s] : (monthElec / days) * DEMAND_PROFILE[s];
-        const hd = (hpTotalElec / days) * HEATING_PROFILE[s];
+        // Heating demand scaled by weather
+        const hd = (monthUsefulHeat / days / dayCop) * HEATING_PROFILE[s] * dayHeatingWeight;
         const sg = daySolarArrays ? daySolarArrays[d % daySolarArrays.length][s] : (monthSolar / days) * solarProfile[s];
         daySolar.push(sg);
         dayDemand.push(bd + hd);
+        dayHeating.push(hd);
       }
+
+      const dailyTotalDemand = dayDemand.reduce((a, b) => a + b, 0);
+      const dailyTotalSolar = daySolar.reduce((a, b) => a + b, 0);
 
       const sorted = dayPrices.slice().sort((a: number, b: number) => a - b);
       const cheapThresh = sorted[Math.min(9, sorted.length - 1)];
@@ -450,6 +582,11 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
             mBattArb -= c * (price / 100);
           }
         } else if (battStrategy === "smart") {
+          // Look ahead for the day - if we have high demand coming and low solar, be more aggressive charging
+          const remainingDemand = dayDemand.slice(slot).reduce((a, b) => a + b, 0);
+          const remainingSolar = daySolar.slice(slot).reduce((a, b) => a + b, 0);
+          const needsCharging = remainingDemand > remainingSolar + (battSOC - bMin) * (batteryEfficiency / 100);
+
           const avgChargeCost = cheapThresh;
           const dischargeCostThresh = (avgChargeCost / (batteryEfficiency / 100)) * 1.1;
 
@@ -463,15 +600,18 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
             mBattArb += del * (price / 100);
           }
           if (isExpensive && netDemand <= 0 && battSOC > bMin + 0.5) {
-            const canExp = Math.min(maxCR, battSOC - bMin - 0.3);
-            if (canExp > 0 && expPrice > dischargeCostThresh) {
-              const exp = canExp * (batteryEfficiency / 100);
-              battSOC -= canExp;
-              slotBattExport = exp;
-              mGridExport += exp;
-              mBattExport += exp;
-              mExportRev += exp * (expPrice / 100);
-              mBattArb += exp * (expPrice / 100);
+            // Only export if we don't expect to need this energy for heating later today
+            if (!needsCharging || expPrice > 35) {
+              const canExp = Math.min(maxCR, battSOC - bMin - 0.3);
+              if (canExp > 0 && expPrice > dischargeCostThresh) {
+                const exp = canExp * (batteryEfficiency / 100);
+                battSOC -= canExp;
+                slotBattExport = exp;
+                mGridExport += exp;
+                mBattExport += exp;
+                mExportRev += exp * (expPrice / 100);
+                mBattArb += exp * (expPrice / 100);
+              }
             }
           }
           if (isCheap && battSOC < bMax - 0.3) {
@@ -562,6 +702,7 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
           expPrice,
           battSOC,
           totalDemand,
+          heatingDemand: dayHeating[slot],
           solarGen,
           solarDirect,
           gridHome: slotGridHome,
@@ -570,6 +711,7 @@ export function simulate(params: any, priceData: any, solarData: any, elecUsage:
           battHome: slotBattHome,
           battExport: slotBattExport,
           solarExport: slotSolarExport,
+          temp: dayTempArrays ? dayTempArrays[d % dayTempArrays.length][Math.floor(slot/2)] : temp
         });
       }
       totalDayCount++;
